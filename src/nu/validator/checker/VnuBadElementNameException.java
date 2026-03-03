@@ -27,13 +27,13 @@ import java.util.Map;
 
 import nu.validator.datatype.Html5DatatypeException;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import com.thaiopensource.xml.util.Name;
+import nu.validator.vendor.thaiopensource.xml.util.Name;
 
 /**
  * Encapsulate an error or warning for a prohibited element name.
@@ -59,7 +59,7 @@ public class VnuBadElementNameException extends SAXParseException {
     public VnuBadElementNameException(String elementName, String uri,
             String message, Locator locator, Class<?> datatypeClass,
             boolean warning) throws SAXException, ClassNotFoundException {
-        super("Bad element name \u201c" + elementName + "\u201d: " + message,
+        super("Bad element name “" + elementName + "”: " + message,
                 locator);
         Html5DatatypeException ex5 = new Html5DatatypeException(0,
                 datatypeClass, "element name", message, warning);

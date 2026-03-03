@@ -24,7 +24,7 @@ package nu.validator.datatype;
 
 import java.util.List;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 public final class Rectangle extends AbstractInt {
 
@@ -61,8 +61,8 @@ public final class Rectangle extends AbstractInt {
                         "The second integer must be less than the fourth.");
             }
         } catch (NumberFormatException e) {
-            throw newDatatypeException("Expected integer less than \u201C" //
-                    + Integer.MAX_VALUE + "\u201D.");
+            throw newDatatypeException("Expected integer less than “" //
+                    + Integer.MAX_VALUE + "”.");
         }
     }
 

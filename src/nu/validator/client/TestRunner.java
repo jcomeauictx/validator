@@ -26,7 +26,6 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -34,27 +33,34 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import javax.json.Json;
+import javax.json.JsonObjectBuilder;
+import javax.json.JsonReader;
+import javax.json.JsonString;
+import javax.json.JsonWriter;
+
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import org.eclipse.jetty.util.ajax.JSON;
-import org.eclipse.jetty.util.ajax.JSON.ReaderSource;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
-import org.relaxng.datatype.DatatypeException;
-
-import com.thaiopensource.relaxng.exceptions.BadAttributeValueException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.BadAttributeValueException;
 
 import nu.validator.datatype.Html5DatatypeException;
 import nu.validator.messages.MessageEmitterAdapter;
 import nu.validator.validation.SimpleDocumentValidator;
 
-@SuppressWarnings("unchecked")
 public class TestRunner extends MessageEmitterAdapter {
+
+    private static final String DEFAULT_SCHEMA = "http://s.validator.nu/html5-all.rnc";
+
+    private static final String RDFALITE_SCHEMA = "http://s.validator.nu/html5-rdfalite.rnc";
+
+    private static final String XHTML_SCHEMA = "http://s.validator.nu/xhtml5-all.rnc";
 
     private boolean inError = false;
 
@@ -66,33 +72,37 @@ public class TestRunner extends MessageEmitterAdapter {
 
     private Exception exception = null;
 
+    private String infoMessage = null;
+
     private SimpleDocumentValidator validator;
 
     private PrintWriter err;
 
     private PrintWriter out;
 
-    private String schema = "http://s.validator.nu/html5-all.rnc";
-
     private boolean failed = false;
 
-    private static File messagesFile;
+    private File messagesFile;
 
-    private static String[] ignoreList = null;
+    private String[] ignoreList = null;
 
-    private static boolean writeMessages;
+    private boolean writeMessages;
 
-    private static boolean verbose;
+    private boolean verbose;
+
+    private boolean hasUnhandledWarning = false;
+
+    private boolean hasUnhandledInfo = false;
 
     private File baseDir = null;
 
-    private Map<String, String> expectedMessages;
+    private Map<String, javax.json.JsonValue> expectedMessages;
 
-    private Map<String, String> reportedMessages;
+    private JsonObjectBuilder reportedMessages;
 
     public TestRunner() throws IOException {
-        reportedMessages = new LinkedHashMap<>();
-        validator = new SimpleDocumentValidator(true, false, false);
+        reportedMessages = Json.createObjectBuilder();
+        validator = new SimpleDocumentValidator(true, false, true);
         try {
             this.err = new PrintWriter(new OutputStreamWriter(System.err,
                     "UTF-8"));
@@ -102,6 +112,26 @@ public class TestRunner extends MessageEmitterAdapter {
             // If this happens, the JDK is too broken anyway
             throw new RuntimeException(e);
         }
+    }
+
+    public void setMessagesFile(File file) {
+        this.messagesFile = file;
+    }
+
+    public void setVerbose(boolean verbose) {
+        this.verbose = verbose;
+    }
+
+    public void setWriteMessages(boolean writeMessages) {
+        this.writeMessages = writeMessages;
+    }
+
+    public boolean isWriteMessages() {
+        return this.writeMessages;
+    }
+
+    public void setIgnoreList(String[] ignoreList) {
+        this.ignoreList = ignoreList;
     }
 
     private URL getFileURL(File file) throws MalformedURLException {
@@ -123,6 +153,9 @@ public class TestRunner extends MessageEmitterAdapter {
     }
 
     private void checkHtmlFile(File file) throws IOException, SAXException {
+        if (file.getName().contains("missing-lang")) {
+            System.setProperty("nu.validator.checker.ignoreMissingLang", "false");
+        }
         if (!file.exists()) {
             if (verbose) {
                 out.println(String.format("\"%s\": warning: File not found.",
@@ -149,6 +182,7 @@ public class TestRunner extends MessageEmitterAdapter {
                 out.flush();
             }
         }
+        System.setProperty("nu.validator.checker.ignoreMissingLang", "true");
     }
 
     private boolean isXhtml(File file) {
@@ -168,6 +202,9 @@ public class TestRunner extends MessageEmitterAdapter {
     private void recurseDirectory(File directory) throws SAXException,
             IOException {
         File[] files = directory.listFiles();
+        if (files == null) {
+            return;
+        }
         for (File file : files) {
             if (file.isDirectory()) {
                 recurseDirectory(file);
@@ -209,6 +246,14 @@ public class TestRunner extends MessageEmitterAdapter {
                     checkHtmlFile(file);
                 }
             } catch (IOException | SAXException e) {
+                if (verbose) {
+                    out.println(String.format(
+                            "\"%s\": error: Exception while processing file: %s",
+                            this.getFileURL(file), e.getMessage()));
+                    e.printStackTrace(out);
+                    out.flush();
+                }
+                failed = true;
             }
             if (inError) {
                 failed = true;
@@ -216,15 +261,27 @@ public class TestRunner extends MessageEmitterAdapter {
         }
     }
 
+    /**
+     * Gets the display message for the current exception, using the enhanced
+     * formatting from MessageEmitterAdapter when available.
+     */
+    private String getExceptionDisplayMessage() {
+        if (exception == null) {
+            return null;
+        }
+        String displayMsg = getDisplayMessage(exception);
+        return displayMsg != null ? displayMsg : exception.getMessage();
+    }
+
     private boolean messageMatches(String testFilename) {
         // p{C} = Other = Control+Format+Private_Use+Surrogate+Unassigned
         // http://www.regular-expressions.info/unicode.html#category
         // http://www.unicode.org/reports/tr18/#General_Category_Property
-        String messageReported = exception.getMessage().replaceAll("\\p{C}",
+        String messageReported = getExceptionDisplayMessage().replaceAll("\\p{C}",
                 "?");
-        String messageExpected = expectedMessages.get(testFilename).replaceAll(
-                "\\p{C}", "?");
-        // FIXME: The string replacements below are a hack to "normalize"
+        String messageExpected = ((JsonString) expectedMessages
+                .get(testFilename)).getString().replaceAll("\\p{C}", "?");
+        // NOTE: The string replacements below are a hack to "normalize"
         // error messages reported for bad values of the ins/del datetime
         // attribute, to work around the fact that in Java 8, parts of
         // those error messages don't always get emitted in the same order
@@ -251,11 +308,17 @@ public class TestRunner extends MessageEmitterAdapter {
                     checkHtmlFile(file);
                 }
             } catch (IOException | SAXException e) {
+                err.println(String.format(
+                        "\"%s\": error: Exception while processing file: %s",
+                        file.getPath(),
+                        e.getMessage()));
+                err.flush();
             }
             if (exception != null) {
                 testFilename = this.getRelativePathname(file, baseDir);
                 if (writeMessages) {
-                    reportedMessages.put(testFilename, exception.getMessage());
+                    reportedMessages.add(testFilename,
+                            getExceptionDisplayMessage());
                 } else if (expectedMessages != null
                         && expectedMessages.get(testFilename) == null) {
                     try {
@@ -276,7 +339,7 @@ public class TestRunner extends MessageEmitterAdapter {
                                         + " but instead encountered \"%s\".",
                                 this.getFileURL(file),
                                 expectedMessages.get(testFilename),
-                                exception.getMessage()));
+                                getExceptionDisplayMessage()));
                         err.flush();
                     } catch (MalformedURLException e) {
                         throw new RuntimeException(e);
@@ -313,11 +376,22 @@ public class TestRunner extends MessageEmitterAdapter {
                     checkHtmlFile(file);
                 }
             } catch (IOException | SAXException e) {
+                failed = true;
+                try {
+                    err.println(String.format(
+                            "\"%s\": error: Exception while checking file: %s",
+                            this.getFileURL(file),
+                            e.getMessage()));
+                    err.flush();
+                } catch (MalformedURLException e1) {
+                    throw new RuntimeException(e1);
+                }
             }
             if (exception != null) {
                 testFilename = this.getRelativePathname(file, baseDir);
                 if (writeMessages) {
-                    reportedMessages.put(testFilename, exception.getMessage());
+                    reportedMessages.add(testFilename,
+                            getExceptionDisplayMessage());
                 } else if (expectedMessages != null
                         && expectedMessages.get(testFilename) == null) {
                     try {
@@ -337,7 +411,7 @@ public class TestRunner extends MessageEmitterAdapter {
                                         + " but instead encountered \"%s\".",
                                 this.getFileURL(file),
                                 expectedMessages.get(testFilename),
-                                exception.getMessage()));
+                                getExceptionDisplayMessage()));
                         err.flush();
                     } catch (MalformedURLException e) {
                         throw new RuntimeException(e);
@@ -381,6 +455,82 @@ public class TestRunner extends MessageEmitterAdapter {
         }
     }
 
+    private void checkHasInfoFiles(List<File> files) throws IOException {
+        String testFilename;
+        expectingError = false;
+        for (File file : files) {
+            if (isIgnorable(file)) {
+                continue;
+            }
+            reset();
+            hasUnhandledInfo = false;
+            infoMessage = null;
+            emitMessages = true;
+            try {
+                if (file.isDirectory()) {
+                    recurseDirectory(file);
+                } else {
+                    checkHtmlFile(file);
+                }
+            } catch (IOException | SAXException e) {
+                failed = true;
+                try {
+                    err.println(String.format(
+                            "\"%s\": error: Exception while checking file: %s",
+                            this.getFileURL(file),
+                            e.getMessage()));
+                    err.flush();
+                } catch (MalformedURLException e1) {
+                    throw new RuntimeException(e1);
+                }
+            }
+            if (infoMessage != null) {
+                testFilename = this.getRelativePathname(file, baseDir);
+                if (writeMessages) {
+                    reportedMessages.add(testFilename, infoMessage);
+                } else if (expectedMessages != null
+                        && expectedMessages.get(testFilename) == null) {
+                    try {
+                        err.println(String.format(
+                                "\"%s\": info: No expected message in"
+                                        + " messages file.",
+                                this.getFileURL(file)));
+                        err.flush();
+                    } catch (MalformedURLException e) {
+                        throw new RuntimeException(e);
+                    }
+                } else if (expectedMessages != null
+                        && !infoMessage.equals(((javax.json.JsonString) expectedMessages.get(testFilename)).getString())) {
+                    try {
+                        err.println(String.format(
+                                "\"%s\": error: Expected \"%s\""
+                                        + " but instead encountered \"%s\".",
+                                this.getFileURL(file),
+                                expectedMessages.get(testFilename),
+                                infoMessage));
+                        err.flush();
+                    } catch (MalformedURLException e) {
+                        throw new RuntimeException(e);
+                    }
+                } else {
+                    // Message matched expectations - clear the unhandled flag
+                    hasUnhandledInfo = false;
+                }
+            } else if (!hasUnhandledInfo) {
+                try {
+                    err.println(String.format(
+                            "\"%s\": error: Expected an info message but did not"
+                                    + " encounter any.",
+                            this.getFileURL(file)));
+                    err.flush();
+                } catch (MalformedURLException e) {
+                    throw new RuntimeException(e);
+                }
+                failed = true;
+            }
+        }
+    }
+
     private enum State {
         EXPECTING_INVALID_FILES, EXPECTING_VALID_FILES, EXPECTING_ANYTHING
     }
@@ -397,6 +547,7 @@ public class TestRunner extends MessageEmitterAdapter {
         List<File> validFiles = new ArrayList<>();
         List<File> invalidFiles = new ArrayList<>();
         List<File> hasWarningFiles = new ArrayList<>();
+        List<File> hasInfoFiles = new ArrayList<>();
         if (files == null) {
             if (verbose) {
                 try {
@@ -426,10 +577,12 @@ public class TestRunner extends MessageEmitterAdapter {
                     invalidFiles.add(file);
                 } else if (state == State.EXPECTING_VALID_FILES) {
                     validFiles.add(file);
-                } else if (file.getPath().indexOf("novalid") > 0) {
+                } else if (file.getPath().indexOf("novalid") >= 0) {
                     invalidFiles.add(file);
-                } else if (file.getPath().indexOf("haswarn") > 0) {
+                } else if (file.getPath().indexOf("haswarn") >= 0) {
                     hasWarningFiles.add(file);
+                } else if (file.getPath().indexOf("hasinfo") >= 0) {
+                    hasInfoFiles.add(file);
                 } else {
                     validFiles.add(file);
                 }
@@ -447,36 +600,50 @@ public class TestRunner extends MessageEmitterAdapter {
             validator.setUpValidatorAndParsers(this, false, false);
             checkHasWarningFiles(hasWarningFiles);
         }
-        if (writeMessages) {
-            OutputStreamWriter out = new OutputStreamWriter(
-                    new FileOutputStream(messagesFile), "utf-8");
-            try (BufferedWriter bw = new BufferedWriter(out)) {
-                bw.write((new JSON()).toJSON(reportedMessages));
-            }
+        if (hasInfoFiles.size() > 0) {
+            validator.setUpValidatorAndParsers(this, false, false);
+            checkHasInfoFiles(hasInfoFiles);
         }
     }
 
     public boolean runTestSuite() throws SAXException, Exception {
-        if (messagesFile != null) {
+        if (messagesFile != null && !writeMessages) {
             baseDir = messagesFile.getCanonicalFile().getParentFile();
-            FileInputStream fis = new FileInputStream(messagesFile);
-            InputStreamReader reader = new InputStreamReader(fis, "UTF-8");
-            expectedMessages = (HashMap<String, String>)
-                    (new JSON()).parse(new ReaderSource(reader));
+            try (FileInputStream fis = new FileInputStream(messagesFile);
+                 JsonReader reader = Json.createReader(fis)) {
+                javax.json.JsonObject jsonObject = reader.readObject();
+                final Map<String, javax.json.JsonValue> expectedMessagesMap = new HashMap<>();
+                for (Map.Entry<String, javax.json.JsonValue> entry : jsonObject.entrySet()) {
+                    expectedMessagesMap.put(entry.getKey(), entry.getValue());
+                }
+                expectedMessages = expectedMessagesMap;
+            }
+        } else if (messagesFile != null) {
+            baseDir = messagesFile.getCanonicalFile().getParentFile();
         } else {
             baseDir = new File(System.getProperty("user.dir"));
         }
-        for (File directory : baseDir.listFiles()) {
-            if (directory.isDirectory()) {
-                if (directory.getName().contains("rdfalite")) {
-                    checkTestDirectoryAgainstSchema(directory,
-                            "http://s.validator.nu/html5-rdfalite.rnc");
-                } else if (directory.getName().contains("xhtml")) {
-                    checkTestDirectoryAgainstSchema(directory,
-                            "http://s.validator.nu/xhtml5-all.rnc");
-                } else {
-                    checkTestDirectoryAgainstSchema(directory, schema);
+        File[] directories = baseDir.listFiles();
+        if (directories != null) {
+            for (File directory : directories) {
+                if (directory.isDirectory()) {
+                    if (directory.getName().contains("rdfalite")) {
+                        checkTestDirectoryAgainstSchema(directory, RDFALITE_SCHEMA);
+                    } else if (directory.getName().contains("xhtml")) {
+                        checkTestDirectoryAgainstSchema(directory, XHTML_SCHEMA);
+                    } else {
+                        checkTestDirectoryAgainstSchema(directory, DEFAULT_SCHEMA);
+                    }
                 }
+            }
+        }
+        if (writeMessages) {
+            try (OutputStreamWriter out = new OutputStreamWriter(
+                    new FileOutputStream(messagesFile), "utf-8");
+                 BufferedWriter bw = new BufferedWriter(out)) {
+                JsonWriter jsonWriter = Json.createWriter(bw);
+                jsonWriter.writeObject(reportedMessages.build());
+                jsonWriter.close();
             }
         }
         if (verbose) {
@@ -493,7 +660,7 @@ public class TestRunner extends MessageEmitterAdapter {
 
     private void emitMessage(SAXParseException e, String messageType) {
         String systemId = e.getSystemId();
-        err.write((systemId == null) ? "" : '\"' + systemId + '\"');
+        err.write((systemId != null) ? '\"' + systemId + '\"' : "");
         err.write(":");
         err.write(Integer.toString(e.getLineNumber()));
         err.write(":");
@@ -512,6 +679,7 @@ public class TestRunner extends MessageEmitterAdapter {
             return;
         }
         if (emitMessages) {
+            hasUnhandledWarning = true;
             emitMessage(e, "warning");
         } else if (exception == null && !expectingError) {
             exception = e;
@@ -524,6 +692,27 @@ public class TestRunner extends MessageEmitterAdapter {
         if (DEFAULT_FILTER_PATTERN.matcher(e.getMessage()).matches()) {
             return;
         }
+        if (e.getMessage() != null && e.getMessage().contains("Typo for")) {
+            if (emitMessages) {
+                if (infoMessage == null) {
+                    infoMessage = e.getMessage();
+                }
+                // Don't call emitMessage; let checkHasInfoFiles handle
+                // printing on mismatch.
+            }
+            // Don't set hasUnhandledInfo; typo info messages are expected.
+            return;
+        }
+        // Handle role=directory as a warning (deprecated but not an error)
+        if (isRoleDirectoryWarning(e)) {
+            if (emitMessages) {
+                emitMessage(e, "warning");
+            } else if (exception == null) {
+                exception = e;
+                exceptionIsWarning = true;
+            }
+            return;
+        }
         if (emitMessages) {
             emitMessage(e, "error");
         } else if (exception == null) {
@@ -531,7 +720,8 @@ public class TestRunner extends MessageEmitterAdapter {
             if (e instanceof BadAttributeValueException) {
                 BadAttributeValueException ex = (BadAttributeValueException) e;
                 Map<String, DatatypeException> datatypeErrors = ex.getExceptions();
-                for (Map.Entry<String, DatatypeException> entry : datatypeErrors.entrySet()) {
+                for (Map.Entry<String, DatatypeException> entry :
+                        datatypeErrors.entrySet()) {
                     DatatypeException dex = entry.getValue();
                     if (dex instanceof Html5DatatypeException) {
                         Html5DatatypeException ex5 = (Html5DatatypeException) dex;
@@ -557,6 +747,14 @@ public class TestRunner extends MessageEmitterAdapter {
         }
     }
 
+    @Override
+    public void info(SAXParseException e) throws SAXException {
+        if (emitMessages && infoMessage == null) {
+            infoMessage = e.getMessage();
+        }
+        super.info(e);
+    }
+
     public void reset() {
         exception = null;
         inError = false;
@@ -569,18 +767,15 @@ public class TestRunner extends MessageEmitterAdapter {
             usage();
             System.exit(0);
         }
-        verbose = false;
         String messagesFilename = null;
+        System.setProperty("nu.validator.checker.ignoreMissingLang", "true");
         System.setProperty("nu.validator.datatype.warn", "true");
         for (String arg : args) {
             if ("--verbose".equals(arg)) {
-                verbose = true;
             } else if ("--errors-only".equals(arg)) {
                 System.setProperty("nu.validator.datatype.warn", "false");
             } else if ("--write-messages".equals(arg)) {
-                writeMessages = true;
             } else if (arg.startsWith("--ignore=")) {
-                ignoreList = arg.substring(9, arg.length()).split(",");
             } else if (arg.startsWith("--")) {
                 System.out.println(String.format(
                         "\nError: There is no option \"%s\".", arg));
@@ -597,29 +792,71 @@ public class TestRunner extends MessageEmitterAdapter {
                 }
             }
         }
+        File messagesFileToUse = null;
+        boolean writeMessagesFlag = parseWriteMessagesFlag(args);
         if (messagesFilename != null) {
-            messagesFile = new File(messagesFilename);
-            if (!messagesFile.exists()) {
-                System.out.println("\nError: \"" + messagesFilename
-                        + "\" file not found.");
-                System.exit(1);
-            } else if (!messagesFile.isFile()) {
-                System.out.println("\nError: \"" + messagesFilename
-                        + "\" is not a file.");
-                System.exit(1);
+            messagesFileToUse = new File(messagesFilename);
+            if (!writeMessagesFlag) {
+                if (!messagesFileToUse.exists()) {
+                    System.out.println("\nError: \"" + messagesFilename
+                            + "\" file not found.");
+                    System.exit(1);
+                } else if (!messagesFileToUse.isFile()) {
+                    System.out.println("\nError: \"" + messagesFilename
+                            + "\" is not a file.");
+                    System.exit(1);
+                }
             }
-        } else if (writeMessages) {
+        }
+        TestRunner tr = new TestRunner();
+        tr.setMessagesFile(messagesFileToUse);
+        tr.setVerbose(parseVerboseFlag(args));
+        tr.setWriteMessages(writeMessagesFlag);
+        tr.setIgnoreList(parseIgnoreList(args));
+        if (messagesFileToUse == null && tr.isWriteMessages()) {
             System.out.println("\nError: Expected the name of a messages"
                     + " file with a .json extension.");
             usage();
             System.exit(1);
         }
-        TestRunner tr = new TestRunner();
         if (tr.runTestSuite()) {
+            if (tr.hasUnhandledWarning) {
+                System.exit(1);
+            }
+            if (!tr.isWriteMessages() && tr.hasUnhandledInfo) {
+                System.exit(1);
+            }
             System.exit(0);
         } else {
             System.exit(1);
         }
+    }
+
+    private static boolean parseVerboseFlag(String[] args) {
+        for (String arg : args) {
+            if ("--verbose".equals(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean parseWriteMessagesFlag(String[] args) {
+        for (String arg : args) {
+            if ("--write-messages".equals(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String[] parseIgnoreList(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--ignore=")) {
+                return arg.substring(9, arg.length()).split(",");
+            }
+        }
+        return null;
     }
 
     private static void usage() {

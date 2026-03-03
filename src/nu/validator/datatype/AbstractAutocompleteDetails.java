@@ -25,7 +25,7 @@ package nu.validator.datatype;
 import java.util.HashSet;
 import java.util.ArrayList;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 abstract class AbstractAutocompleteDetails extends AbstractDatatype {
 
@@ -125,91 +125,84 @@ abstract class AbstractAutocompleteDetails extends AbstractDatatype {
         if (builder.length() > 0) {
             detailTokens.add(builder.toString());
         }
-        if (detailTokens.size() > 0) {
-            checkTokens(detailTokens);
-        }
+        checkTokens(detailTokens);
     }
 
     private void checkTokens(ArrayList<String> detailTokens)
             throws DatatypeException {
         boolean isContactDetails = false;
-        String contactType = "";
-        String firstRemainingToken = "";
-        if (detailTokens.size() < 1) {
+        if (detailTokens.isEmpty()) {
             return;
         }
-        if (CONTACT_TYPES.contains(detailTokens.get(0))) {
-            isContactDetails = true;
-            contactType = detailTokens.get(0);
+        if (detailTokens.get(0).startsWith("section-")) {
             detailTokens.remove(0);
         }
-        if (detailTokens.size() > 0
-                && detailTokens.get(0).startsWith("section-")) {
-            if (isContactDetails) {
-                throw newDatatypeException(
-                        "A \u201csection-*\u201d indicator is not allowed"
-                                + " when the first token in a list"
-                                + " of autofill detail tokens is" + " \u201c"
-                                + contactType + "\u201d.");
-            }
+        if (!detailTokens.isEmpty()
+                && (detailTokens.get(0).equals("shipping")
+                || detailTokens.get(0).equals("billing"))) {
             detailTokens.remove(0);
         }
-        if (detailTokens.size() < 1) {
-            return;
-        }
-        firstRemainingToken = detailTokens.get(0);
-        if (firstRemainingToken.equals("shipping")
-                || firstRemainingToken.equals("billing")) {
-            if (isContactDetails) {
-                throw newDatatypeException(
-                        "The token \u201c" + firstRemainingToken + "\u201d is"
-                                + " not allowed when the first token in a list"
-                                + " of autofill detail tokens is" + " \u201c"
-                                + contactType + "\u201d.");
-            }
-            detailTokens.remove(0);
-        }
-        if (detailTokens.size() > 0
+        if (!detailTokens.isEmpty()
                 && CONTACT_TYPES.contains(detailTokens.get(0))) {
-            isContactDetails = true;
-            contactType = detailTokens.get(0);
             detailTokens.remove(0);
+            isContactDetails = true;
         }
-        for (String token : detailTokens) {
+        int detailTokensSize = detailTokens.size();
+        for (int i = 0; i < detailTokensSize; i++) {
+            String token = detailTokens.get(i);
+            if ("webauthn".equals(token)) {
+                if (detailTokensSize == 1) {
+                    throw newDatatypeException(
+                            "The token “webauthn” must not be the only"
+                            + " token in a list of autofill detail tokens.");
+                } else if (i == detailTokensSize - 1) {
+                    return;
+                } else {
+                    throw newDatatypeException(
+                            "The token “webauthn” must only appear"
+                            + " as the very last token in a list of autofill"
+                            + " detail tokens.");
+                }
+            }
             if (CONTACT_TYPES.contains(token)) {
                 throw newDatatypeException(
-                        "The token \u201c" + token + "\u201d must only"
+                        "The token “" + token + "” must only"
                                 + " appear before any autofill field names.");
             } else if (token.startsWith("section-")) {
                 throw newDatatypeException(
-                        "A \u201csection-*\u201d indicator must only"
+                        "A “section-*” indicator must only"
                                 + " appear as the first token in a list"
                                 + " of autofill detail tokens.");
             } else if ("shipping".equals(token) || "billing".equals(token)) {
                 throw newDatatypeException(
-                        "The token \u201c" + token + "\u201d must only"
+                        "The token “" + token + "” must only"
                                 + " appear as either the first token in a list"
                                 + " of autofill detail tokens, or, if the first"
-                                + " token is a \u201csection-*\u201d indicator,"
+                                + " token is a “section-*” indicator,"
                                 + " as the second token.");
             }
             if (!ALL_FIELD_NAMES.contains(token)) {
-                throw newDatatypeException("The string \u201c" + token
-                        + "\u201d is not a valid autofill field name.");
+                throw newDatatypeException("The string “" + token
+                        + "” is not a valid autofill field name.");
             }
             if (isContactDetails
                     && !getAllowedContactFieldnames().contains(token)) {
-                throw newDatatypeException("The autofill field name \u201c"
-                        + token + "\u201d is not allowed in this context.");
+                throw newDatatypeException("The autofill field name “"
+                        + token + "” is not allowed in this context.");
             }
             if (!getAllowedFieldnames().contains(token)) {
-                throw newDatatypeException("The autofill field name \u201c"
-                        + token + "\u201d is not allowed in this context.");
+                throw newDatatypeException("The autofill field name “"
+                        + token + "” is not allowed in this context.");
             }
         }
         if (detailTokens.size() > 1) {
+            if (!"webauthn".equals(detailTokens.get(1))) {
+                throw newDatatypeException("A list of autofill details tokens"
+                        + " must not contain more than one autofill field name.");
+            }
+        } else if (detailTokens.isEmpty()) {
             throw newDatatypeException("A list of autofill details tokens must"
-                    + " not contain more than one autofill field name.");
+                    + " contain an autofill field name.");
         }
     }
 

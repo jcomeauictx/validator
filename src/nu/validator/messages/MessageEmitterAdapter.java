@@ -36,6 +36,7 @@ import java.util.Set;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import nu.validator.checker.InfoAwareErrorHandler;
 import nu.validator.checker.NormalizationChecker;
 import nu.validator.checker.DatatypeMismatchException;
 import nu.validator.checker.VnuBadAttrValueException;
@@ -59,34 +60,34 @@ import nu.validator.xml.AttributesImpl;
 import nu.validator.xml.CharacterUtil;
 import nu.validator.xml.XhtmlSaxEmitter;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import com.thaiopensource.relaxng.exceptions.AbstractValidationException;
-import com.thaiopensource.relaxng.exceptions.BadAttributeValueException;
-import com.thaiopensource.relaxng.exceptions.ImpossibleAttributeIgnoredException;
-import com.thaiopensource.relaxng.exceptions.OnlyTextNotAllowedException;
-import com.thaiopensource.relaxng.exceptions.OutOfContextElementException;
-import com.thaiopensource.relaxng.exceptions.RequiredAttributesMissingException;
-import com.thaiopensource.relaxng.exceptions.RequiredAttributesMissingOneOfException;
-import com.thaiopensource.relaxng.exceptions.RequiredElementsMissingException;
-import com.thaiopensource.relaxng.exceptions.RequiredElementsMissingOneOfException;
-import com.thaiopensource.relaxng.exceptions.StringNotAllowedException;
-import com.thaiopensource.relaxng.exceptions.TextNotAllowedException;
-import com.thaiopensource.relaxng.exceptions.UnfinishedElementException;
-import com.thaiopensource.relaxng.exceptions.UnfinishedElementOneOfException;
-import com.thaiopensource.relaxng.exceptions.UnknownElementException;
-import com.thaiopensource.xml.util.Name;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.AbstractValidationException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.BadAttributeValueException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.ImpossibleAttributeIgnoredException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.OnlyTextNotAllowedException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.OutOfContextElementException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.RequiredAttributesMissingException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.RequiredAttributesMissingOneOfException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.RequiredElementsMissingException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.RequiredElementsMissingOneOfException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.StringNotAllowedException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.TextNotAllowedException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.UnfinishedElementException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.UnfinishedElementOneOfException;
+import nu.validator.vendor.thaiopensource.relaxng.exceptions.UnknownElementException;
+import nu.validator.vendor.thaiopensource.xml.util.Name;
 
 import org.apache.log4j.Logger;
 import com.ibm.icu.text.Normalizer;
 
 @SuppressWarnings("unchecked")
-public class MessageEmitterAdapter implements ErrorHandler {
+public class MessageEmitterAdapter implements InfoAwareErrorHandler {
 
     private static final Logger log4j = Logger.getLogger(MessageEmitterAdapter.class);
 
@@ -372,6 +373,14 @@ public class MessageEmitterAdapter implements ErrorHandler {
 
     private final static char[] IN_THIS_CONTEXT = " in this context.".toCharArray();
 
+    /**
+     * Elements with transparent content models per HTML spec.
+     * These elements inherit content restrictions from their ancestors.
+     */
+    private static final Set<String> TRANSPARENT_ELEMENTS = Set.of(
+            "a", "ins", "del", "object", "video", "audio", "canvas", "map",
+            "slot");
+
     private final static char[] TEXT_NOT_ALLOWED_IN = "Text not allowed in ".toCharArray();
 
     private final static char[] UNKNOWN = "Unknown ".toCharArray();
@@ -436,6 +445,8 @@ public class MessageEmitterAdapter implements ErrorHandler {
     private boolean loggingOk = false;
 
     private boolean errorsOnly = false;
+
+    private boolean skipInfoMessages = false;
 
     @SuppressWarnings("deprecation")
     protected static String scrub(String s) throws SAXException {
@@ -597,6 +608,12 @@ public class MessageEmitterAdapter implements ErrorHandler {
                 if (dex instanceof Html5DatatypeException) {
                     Html5DatatypeException ex5 = (Html5DatatypeException) dex;
                     if (ex5.isWarning()) {
+                        String message = ex5.getMessage();
+                        if (message != null && message.contains("Typo for")) {
+                            messageFromSAXParseException(MessageType.INFO, e,
+                                    exact, null);
+                            return;
+                        }
                         this.warnings++;
                         throwIfTooManyMessages();
                         messageFromSAXParseException(MessageType.WARNING, e,
@@ -657,11 +674,34 @@ public class MessageEmitterAdapter implements ErrorHandler {
         }
     }
 
+    @Override
+    public void info(SAXParseException e) throws SAXException {
+        info(e, false);
+    }
+
+    /**
+     * Convenience method for emitting info messages with just a string.
+     * This creates a SAXParseException without location information.
+     * For messages with location info, use the info(SAXParseException) method
+     * from InfoAwareErrorHandler interface.
+     *
+     * @param str the info message
+     * @throws SAXException if something goes wrong
+     */
     public void info(String str) throws SAXException {
-        if (emitter instanceof GnuMessageEmitter)
-            return;
         message(MessageType.INFO, new Exception(str), null, -1, -1, false,
                 null);
+    }
+
+    private void info(SAXParseException e, boolean exact) throws SAXException {
+        if (emitter == null) {
+            return;
+        }
+        if ((!batchMode && fatalErrors > 0) || nonDocumentErrors > 0) {
+            return;
+        }
+        throwIfTooManyMessages();
+        messageFromSAXParseException(MessageType.INFO, e, exact, null);
     }
 
     public void ioError(IOException e) throws SAXException {
@@ -809,6 +849,191 @@ public class MessageEmitterAdapter implements ErrorHandler {
         return nonDocumentErrors > 0;
     }
 
+    /**
+     * Checks if an exception represents a role=directory error, which should
+     * be treated as a warning (deprecated but not invalid).
+     */
+    protected static boolean isRoleDirectoryWarning(Exception e) {
+        if (e instanceof BadAttributeValueException) {
+            BadAttributeValueException ex = (BadAttributeValueException) e;
+            return "directory".equals(ex.getAttributeValue())
+                    && "role".equals(ex.getAttributeName().getLocalName());
+        }
+        return false;
+    }
+
+    protected String getDisplayMessage(Exception message) {
+        if (message instanceof AbstractValidationException) {
+            return getDisplayMessageForRng(
+                    (AbstractValidationException) message);
+        } else if (message instanceof VnuBadAttrValueException) {
+            VnuBadAttrValueException e = (VnuBadAttrValueException) message;
+            return "Bad value “" + e.getAttributeValue()
+                    + "” for attribute “"
+                    + e.getAttributeName().getLocalName()
+                    + "” on element “"
+                    + e.getCurrentElement().getLocalName() + "”.";
+        } else if (message instanceof VnuBadElementNameException) {
+            VnuBadElementNameException e = (VnuBadElementNameException) message;
+            return "Element “" + e.getElementName()
+                    + "” not allowed.";
+        }
+        return null;
+    }
+
+    private String getDisplayMessageForRng(AbstractValidationException e) {
+        StringBuilder sb = new StringBuilder();
+        if (e instanceof BadAttributeValueException) {
+            BadAttributeValueException ex = (BadAttributeValueException) e;
+            sb.append("Bad value “").append(ex.getAttributeValue()).append(
+                    "” for attribute “").append(
+                            ex.getAttributeName().getLocalName()).append(
+                                    "” on element “").append(
+                                            ex.getCurrentElement()
+                                            .getLocalName()).append("”.");
+        } else if (e instanceof ImpossibleAttributeIgnoredException) {
+            ImpossibleAttributeIgnoredException ex =
+                (ImpossibleAttributeIgnoredException) e;
+            sb.append("Attribute “").append(
+                    ex.getAttributeName().getLocalName()).append(
+                    "” not allowed on element “").append(
+                            ex.getCurrentElement().getLocalName()).append(
+                                    "” at this point.");
+        } else if (e instanceof OnlyTextNotAllowedException) {
+            OnlyTextNotAllowedException ex = (OnlyTextNotAllowedException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” is not allowed to have content that"
+                            + " consists solely of text.");
+        } else if (e instanceof OutOfContextElementException) {
+            OutOfContextElementException ex = (OutOfContextElementException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” not allowed");
+            String parentName = null;
+            if (ex.getParent() != null) {
+                parentName = ex.getParent().getLocalName();
+                sb.append(" as child of “").append(parentName).append(
+                        "”");
+            }
+            sb.append(" in this context.");
+            if (parentName != null
+                    && TRANSPARENT_ELEMENTS.contains(parentName)) {
+                sb.append(" Note: The “").append(parentName).append(
+                        "” element has a transparent content model;")
+                        .append(" its allowed content is inherited from its")
+                        .append(" parent element.");
+            }
+        } else if (e instanceof RequiredAttributesMissingOneOfException) {
+            RequiredAttributesMissingOneOfException ex =
+                (RequiredAttributesMissingOneOfException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” is missing one or more of the following"
+                            + " attributes: ");
+            for (Iterator<String> iter =
+                    ex.getAttributeLocalNames().iterator(); iter.hasNext();) {
+                sb.append("“").append(iter.next()).append("”");
+                if (iter.hasNext()) {
+                    sb.append(", ");
+                }
+            }
+            sb.append(".");
+        } else if (e instanceof RequiredAttributesMissingException) {
+            RequiredAttributesMissingException ex =
+                (RequiredAttributesMissingException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” is missing required attribute “")
+                    .append(ex.getAttributeLocalName()).append("”.");
+        } else if (e instanceof RequiredElementsMissingException) {
+            RequiredElementsMissingException ex =
+                (RequiredElementsMissingException) e;
+            if (ex.getParent() == null) {
+                sb.append("Required elements missing.");
+            } else {
+                sb.append("Element “").append(
+                        ex.getParent().getLocalName()).append("”");
+                if (ex.getMissingElementName() == null) {
+                    sb.append(" is missing a required child element");
+                } else {
+                    sb.append(
+                            " is missing a required instance of child element"
+                            + " “").append(ex.getMissingElementName())
+                        .append("”");
+                }
+                sb.append(".");
+            }
+        } else if (e instanceof TextNotAllowedException) {
+            TextNotAllowedException ex = (TextNotAllowedException) e;
+            sb.append("Text not allowed in “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” in this context.");
+        } else if (e instanceof UnfinishedElementException) {
+            UnfinishedElementException ex = (UnfinishedElementException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append("”");
+            if (ex.getMissingElementName() == null) {
+                sb.append(" is missing a required child element");
+            } else {
+                sb.append(
+                        " is missing a required instance of child element"
+                        + " “").append(
+                                ex.getMissingElementName()).append("”");
+            }
+            sb.append(".");
+        } else if (e instanceof UnfinishedElementOneOfException) {
+            UnfinishedElementOneOfException ex =
+                (UnfinishedElementOneOfException) e;
+            sb.append("Element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” is missing a required instance of one"
+                            + " or more of the following child elements: ");
+            for (Iterator<String> iter =
+                    ex.getMissingElementNames().iterator(); iter.hasNext();) {
+                sb.append("“").append(iter.next()).append("”");
+                if (iter.hasNext()) {
+                    sb.append(", ");
+                }
+            }
+            sb.append(".");
+        } else if (e instanceof RequiredElementsMissingOneOfException) {
+            RequiredElementsMissingOneOfException ex =
+                (RequiredElementsMissingOneOfException) e;
+            sb.append("Element “").append(
+                    ex.getParent().getLocalName()).append(
+                            "” is missing a required instance of one or"
+                            + " more of the following child elements: ");
+            for (Iterator<String> iter =
+                    ex.getMissingElementNames().iterator(); iter.hasNext();) {
+                sb.append("“").append(iter.next()).append("”");
+                if (iter.hasNext()) {
+                    sb.append(", ");
+                }
+            }
+            sb.append(".");
+        } else if (e instanceof UnknownElementException) {
+            UnknownElementException ex = (UnknownElementException) e;
+            sb.append("Unknown element “").append(
+                    ex.getCurrentElement().getLocalName()).append(
+                            "” not allowed");
+            if (ex.getParent() != null) {
+                sb.append(" as child of “").append(
+                        ex.getParent().getLocalName()).append("”");
+            }
+            sb.append(".");
+        } else if (e instanceof StringNotAllowedException) {
+            StringNotAllowedException ex = (StringNotAllowedException) e;
+            sb.append("Bad character content “").append(
+                    ex.getValue()).append("” for element “").append(
+                            ex.getCurrentElement().getLocalName()).append(
+                                    "”.");
+        } else {
+            return null;
+        }
+        return sb.toString();
+    }
+
     private void messageFromSAXParseException(MessageType type,
             SAXParseException spe, boolean exact, int[] start)
             throws SAXException {
@@ -820,7 +1045,25 @@ public class MessageEmitterAdapter implements ErrorHandler {
     private void message(MessageType type, Exception message, String systemId,
             int oneBasedLine, int oneBasedColumn, boolean exact, int[] start)
             throws SAXException {
-        String msg = message.getMessage();
+        if (skipInfoMessages && type == MessageType.INFO)
+            return;
+        // Convert role=directory errors to warnings before filtering
+        if (type == MessageType.ERROR && isRoleDirectoryWarning(message)) {
+            if (this.errors > 0) {
+                this.errors--;
+            }
+            this.warnings++;
+            message(MessageType.WARNING, message, systemId, oneBasedLine,
+                    oneBasedColumn, exact, start);
+            return;
+        }
+        // Use display message for filtering (what users see in output).
+        // Fall back to internal message for exception types not handled by
+        // getDisplayMessage().
+        String msg = getDisplayMessage(message);
+        if (msg == null) {
+            msg = message.getMessage();
+        }
         if (msg != null && ((filterPattern != null
                 && filterPattern.matcher(msg).matches())
                 || DEFAULT_FILTER_PATTERN.matcher(msg).matches())) {
@@ -856,7 +1099,7 @@ public class MessageEmitterAdapter implements ErrorHandler {
         if (errorsOnly && type.getSuperType() == "info") {
             return;
         }
-        String uri = sourceCode.getUri();
+        String uri = sourceCode != null ? sourceCode.getUri() : null;
         if (oneBasedLine > -1
                 && (uri == systemId || (uri != null && uri.equals(systemId)))) {
             if (oneBasedColumn > -1) {
@@ -879,6 +1122,11 @@ public class MessageEmitterAdapter implements ErrorHandler {
     private void messageWithRange(MessageType type, Exception message,
             String systemId, int oneBasedLine, int oneBasedColumn, int[] start)
             throws SAXException {
+        if (sourceCode == null) {
+            messageWithoutExtract(type, message, systemId, oneBasedLine,
+                    oneBasedColumn);
+            return;
+        }
         if (start != null && !sourceCode.getIsCss()) {
             oneBasedColumn = oneBasedColumn + start[2];
         }
@@ -919,6 +1167,11 @@ public class MessageEmitterAdapter implements ErrorHandler {
     private void messageWithExact(MessageType type, Exception message,
             String systemId, int oneBasedLine, int oneBasedColumn, int[] start)
             throws SAXException {
+        if (sourceCode == null) {
+            messageWithoutExtract(type, message, systemId, oneBasedLine,
+                    oneBasedColumn);
+            return;
+        }
         if (start != null && !sourceCode.getIsCss()) {
             oneBasedColumn = oneBasedColumn + start[2];
         }
@@ -943,6 +1196,10 @@ public class MessageEmitterAdapter implements ErrorHandler {
 
     private void messageWithLine(MessageType type, Exception message,
             String systemId, int oneBasedLine) throws SAXException {
+        if (sourceCode == null) {
+            messageWithoutExtract(type, message, systemId, oneBasedLine, -1);
+            return;
+        }
         systemId = batchMode ? systemId : null;
         if (!sourceCode.isWithinKnownSource(oneBasedLine)) {
             throw new RuntimeException("Bug. Line out of range!");
@@ -962,7 +1219,7 @@ public class MessageEmitterAdapter implements ErrorHandler {
     private void messageWithoutExtract(MessageType type, Exception message,
             String systemId, int oneBasedLine, int oneBasedColumn)
             throws SAXException {
-        if (systemId == null) {
+        if (systemId == null && sourceCode != null) {
             systemId = sourceCode.getUri();
         }
         startMessage(type, scrub(shortenDataUri(systemId)), oneBasedLine,
@@ -1110,12 +1367,23 @@ public class MessageEmitterAdapter implements ErrorHandler {
                 OutOfContextElementException ex = (OutOfContextElementException) e;
                 element(messageTextHandler, ex.getCurrentElement(), true);
                 messageTextString(messageTextHandler, NOT_ALLOWED, false);
+                String parentName = null;
                 if (ex.getParent() != null) {
+                    parentName = ex.getParent().getLocalName();
                     messageTextString(messageTextHandler, AS_CHILD_OF, false);
                     element(messageTextHandler, ex.getParent(), false);
                 }
                 messageTextString(messageTextHandler,
                         IN_THIS_CONTEXT_SUPPRESSING, false);
+                if (parentName != null
+                        && TRANSPARENT_ELEMENTS.contains(parentName)) {
+                    messageTextString(messageTextHandler, (" Note: The “"
+                            + parentName + "” element has a transparent"
+                            + " content model; its allowed content is"
+                            + " inherited from its parent element.")
+                                    .toCharArray(),
+                            false);
+                }
             } else if (e instanceof RequiredAttributesMissingOneOfException) {
                 RequiredAttributesMissingOneOfException ex = (RequiredAttributesMissingOneOfException) e;
                 element(messageTextHandler, ex.getCurrentElement(), true);
@@ -1155,11 +1423,26 @@ public class MessageEmitterAdapter implements ErrorHandler {
                 }
             } else if (e instanceof StringNotAllowedException) {
                 StringNotAllowedException ex = (StringNotAllowedException) e;
-                messageTextString(messageTextHandler, BAD_CHARACTER_CONTENT,
-                        false);
-                codeString(messageTextHandler, ex.getValue());
-                messageTextString(messageTextHandler, FOR, false);
-                element(messageTextHandler, ex.getCurrentElement(), false);
+                boolean isTypoInfo = false;
+                Map<String, DatatypeException> datatypeErrors = ex.getExceptions();
+                for (Map.Entry<String, DatatypeException> entry :
+                        datatypeErrors.entrySet()) {
+                    DatatypeException dex = entry.getValue();
+                    if (dex instanceof Html5DatatypeException) {
+                        Html5DatatypeException ex5 = (Html5DatatypeException) dex;
+                        if (ex5.isWarning() && ex5.getMessage() != null
+                                && ex5.getMessage().contains("Typo for")) {
+                            isTypoInfo = true;
+                        }
+                    }
+                }
+                if (!isTypoInfo) {
+                    messageTextString(messageTextHandler, BAD_CHARACTER_CONTENT,
+                            false);
+                    codeString(messageTextHandler, ex.getValue());
+                    messageTextString(messageTextHandler, FOR, false);
+                    element(messageTextHandler, ex.getCurrentElement(), false);
+                }
                 emitDatatypeErrors(messageTextHandler, ex.getExceptions());
             } else if (e instanceof TextNotAllowedException) {
                 TextNotAllowedException ex = (TextNotAllowedException) e;
@@ -1234,9 +1517,26 @@ public class MessageEmitterAdapter implements ErrorHandler {
         if (datatypeErrors.isEmpty()) {
             messageTextString(messageTextHandler, PERIOD, false);
         } else {
-            messageTextString(messageTextHandler, COLON, false);
-            for (Map.Entry<String, DatatypeException> entry : datatypeErrors.entrySet()) {
-                messageTextString(messageTextHandler, SPACE, false);
+            boolean isTypoInfo = false;
+            for (Map.Entry<String, DatatypeException> entry :
+                    datatypeErrors.entrySet()) {
+                DatatypeException ex = entry.getValue();
+                if (ex instanceof Html5DatatypeException) {
+                    Html5DatatypeException ex5 = (Html5DatatypeException) ex;
+                    if (ex5.isWarning() && ex5.getMessage() != null
+                            && ex5.getMessage().contains("Typo for")) {
+                        isTypoInfo = true;
+                    }
+                }
+            }
+            if (!isTypoInfo) {
+                messageTextString(messageTextHandler, COLON, false);
+            }
+            for (Map.Entry<String, DatatypeException> entry :
+                    datatypeErrors.entrySet()) {
+                if (!isTypoInfo) {
+                    messageTextString(messageTextHandler, SPACE, false);
+                }
                 DatatypeException ex = entry.getValue();
                 if (ex instanceof Html5DatatypeException) {
                     Html5DatatypeException ex5 = (Html5DatatypeException) ex;
@@ -1370,7 +1670,7 @@ public class MessageEmitterAdapter implements ErrorHandler {
         int startQuotes = 0;
         for (int i = 0; i < len; i++) {
             char c = message.charAt(i);
-            if (c == '\u201C') {
+            if (c == '“') {
                 startQuotes++;
                 if (startQuotes == 1) {
                     char[] scrubbed = scrub(message.substring(start, i)).toCharArray();
@@ -1378,7 +1678,7 @@ public class MessageEmitterAdapter implements ErrorHandler {
                     start = i + 1;
                     messageTextHandler.startCode();
                 }
-            } else if (c == '\u201D' && startQuotes > 0) {
+            } else if (c == '”' && startQuotes > 0) {
                 startQuotes--;
                 if (startQuotes == 0) {
                     char[] scrubbed = scrub(message.substring(start, i)).toCharArray();
@@ -1811,6 +2111,16 @@ public class MessageEmitterAdapter implements ErrorHandler {
      */
     public void setErrorsOnly(boolean errorsOnly) {
         this.errorsOnly = errorsOnly;
+    }
+
+    /**
+     * Sets the skipInfoMessages.
+     *
+     * @param skipInfoMessages
+     *            the skipInfoMessages to set
+     */
+    public void setSkipInfoMessages(boolean skipInfoMessages) {
+        this.skipInfoMessages = skipInfoMessages;
     }
 
     /**

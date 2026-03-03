@@ -262,10 +262,10 @@ public final class SourceCode implements CharacterHandler {
     }
 
     public boolean isWithinKnownSource(Location location) {
-        if (location.getLine() >= lines.size()) {
+        Line line = getLine(location.getLine());
+        if (line == null) {
             return false;
         }
-        Line line = lines.get(location.getLine());
         return line.getBufferLength() >= location.getColumn();
     }
 
@@ -274,6 +274,9 @@ public final class SourceCode implements CharacterHandler {
     }
 
     Line getLine(int line) {
+        if (line < 0 || line >= lines.size()) {
+            return null;
+        }
         return lines.get(line);
     }
 
@@ -284,6 +287,9 @@ public final class SourceCode implements CharacterHandler {
     void emitCharacter(Location location, SourceHandler handler)
             throws SAXException {
         Line line = getLine(location.getLine());
+        if (line == null) {
+            return;
+        }
         int col = location.getColumn();
         if (col == line.getBufferLength()) {
             handler.newLine();
@@ -309,6 +315,9 @@ public final class SourceCode implements CharacterHandler {
         int fromLine = from.getLine();
         int untilLine = until.getLine();
         Line line = getLine(fromLine);
+        if (line == null) {
+            return;
+        }
         if (fromLine == untilLine) {
             try {
                 handler.characters(line.getBuffer(),
@@ -322,8 +331,11 @@ public final class SourceCode implements CharacterHandler {
             if (length > 0) {
                 if (!((fromLine == 0 || fromLine == lines.size() - 1)
                         && this.isCss)) {
-                    handler.characters(line.getBuffer(),
-                            line.getOffset() + from.getColumn(), length);
+                    try {
+                        handler.characters(line.getBuffer(),
+                                line.getOffset() + from.getColumn(), length);
+                    } catch (ArrayIndexOutOfBoundsException e) {
+                    }
                 }
             }
             if (fromLine + 1 != lines.size()) {
@@ -335,8 +347,14 @@ public final class SourceCode implements CharacterHandler {
             int wholeLine = fromLine + 1;
             while (wholeLine < untilLine) {
                 line = getLine(wholeLine);
-                handler.characters(line.getBuffer(), line.getOffset(),
-                        line.getBufferLength());
+                if (line == null) {
+                    break;
+                }
+                try {
+                    handler.characters(line.getBuffer(), line.getOffset(),
+                            line.getBufferLength());
+                } catch (ArrayIndexOutOfBoundsException e) {
+                }
                 wholeLine++;
                 if (wholeLine != lines.size()) {
                     handler.newLine();
@@ -346,9 +364,15 @@ public final class SourceCode implements CharacterHandler {
             int untilCol = until.getColumn();
             if (untilCol > 0) {
                 line = getLine(untilLine);
+                if (line == null) {
+                    return;
+                }
                 if (!(untilLine == lines.size() - 1 && this.isCss)) {
-                    handler.characters(line.getBuffer(), line.getOffset(),
-                            untilCol);
+                    try {
+                        handler.characters(line.getBuffer(), line.getOffset(),
+                                untilCol);
+                    } catch (ArrayIndexOutOfBoundsException e) {
+                    }
                 }
             }
         }

@@ -26,7 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 public class ImageCandidateStrings extends AbstractDatatype {
 
@@ -403,7 +403,7 @@ public class ImageCandidateStrings extends AbstractDatatype {
     }
 
     private CharSequence code(CharSequence cs) {
-        return "\u201c" + cs + "\u201d";
+        return "“" + cs + "”";
     }
 
     protected boolean widthRequired() {

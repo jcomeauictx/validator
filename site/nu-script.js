@@ -53,6 +53,7 @@ function reboot() {
 	boot()
 	initFieldHolders()
 	initUserAgents()
+	initWarningsOnly()
 	installDynamicStyle()
 	updateFragmentIdHilite()
 	window.setInterval(emulateHashChanged, 50)
@@ -61,6 +62,7 @@ function reboot() {
 	injectHyperlinks()
 	moveLangAndDirWarningsAndAddLinks()
 	replaceSuccessFailure()
+	hideSourceIfNotRequested()
 }
 
 function installDynamicStyle() {
@@ -122,27 +124,29 @@ function initFieldHolders() {
 	modeSelect.appendChild(createOption('file upload', 'file'))
 	modeSelect.appendChild(createOption('text input', 'textarea'))
 	modeSelect.onchange = function() {
-	if (this.value == 'file') {
-		installFileUpload()
-		location.hash = '#file'
-	}
-	else
-		if (this.value == 'textarea') {
+		if (this.value == 'file') {
+			installFileUpload()
+			location.hash = '#file'
+		} else if (this.value == 'textarea') {
 			installTextarea()
 			location.hash = '#textarea'
-		}
-		else {
+		} else {
 			installUrlInput()
 			history.pushState("", document.title, location.pathname);
+		}
+		if (supportsLocalStorage()) {
+			localStorage["lastInputMode"] = this.value
 		}
 	}
 	label.appendChild(modeSelect)
 	if (urlInput.className == 'file') {
 		installFileUpload()
+		location.hash = '#file'
 		modeSelect.value = 'file'
 	} else
 		if (urlInput.className == 'textarea' || disabledAddressType) {
 		installTextarea()
+		location.hash = '#textarea'
 		modeSelect.value = 'textarea'
 	}
 	document.querySelector('#show_options')
@@ -151,14 +155,27 @@ function initFieldHolders() {
 		}, false)
 	if (location.hash == '#file') {
 		installFileUpload()
+		location.hash = '#file'
 		modeSelect.value = 'file'
 	} else {
 		if (location.hash == '#textarea' || disabledAddressType) {
 			installTextarea()
+			location.hash = '#textarea'
 			modeSelect.value = 'textarea'
 		}
 		else {
-			installUrlInput()
+			if (supportsLocalStorage() && localStorage["lastInputMode"] == 'file') {
+				installFileUpload()
+				location.hash = '#file'
+				modeSelect.value = 'file'
+			} else if (supportsLocalStorage() && localStorage["lastInputMode"] == 'textarea') {
+				installTextarea()
+				location.hash = '#textarea'
+				modeSelect.value = 'textarea'
+			} else {
+				installUrlInput()
+				modeSelect.value = ''
+			}
 		}
 	}
 }
@@ -176,6 +193,25 @@ function toggleExtraOptions() {
 		extraoptions_useragent.removeAttribute("disabled")
 		extraoptions_acceptlanguage.removeAttribute("disabled")
 	}
+}
+
+function initWarningsOnly() {
+	var warningsCheckbox = document.getElementById("level")
+	if (!warningsCheckbox) {
+		return
+	}
+	if (supportsLocalStorage() && localStorage["warningsOnly"] == "yes") {
+		warningsCheckbox.checked = true
+	}
+	warningsCheckbox.addEventListener("change", function(e) {
+		if (supportsLocalStorage()) {
+			if (e.target.checked) {
+				localStorage["warningsOnly"] = "yes"
+			} else {
+				localStorage["warningsOnly"] = "no"
+			}
+		}
+	}, false)
 }
 
 function initUserAgents() {
@@ -235,7 +271,7 @@ function formSubmission() {
 	}
 	disableByIdIfEmptyString("doc")
 	if (textareaHidden && textarea) {
-	  textareaHidden.value = textarea.value
+		textareaHidden.value = textarea.value
 	}
 	return true
 }
@@ -306,6 +342,9 @@ function injectHyperlinks() {
 	linkify(errors, "all image candidate strings must specify a width",
 		"https://ericportis.com/posts/2014/srcset-sizes/",
 		"srcset and sizes overview")
+	linkify(info, "https://www.w3.org/International/articles/ruby/markup.en.html#visual",
+		"https://www.w3.org/International/articles/ruby/markup.en.html#visual",
+		"W3C guidance on ruby markup")
 	}
 
 function replaceSuccessFailure() {
@@ -365,7 +404,7 @@ function moveLangAndDirWarningsAndAddLinks() {
 	var langGuidance = 'For further guidance, consult <a href="https://www.w3.org/International/techniques/authoring-html.en?open=language&open=textprocessing#textprocessing">Declaring the overall language of a page</a> and <a href="https://www.w3.org/International/techniques/authoring-html.en?open=language&open=langvalues#langvalues">Choosing language tags</a>.'
 	var contentLangGuidance = 'For further guidance, consult <a href="https://www.w3.org/International/questions/qa-http-and-lang">HTTP headers, meta elements and language information</a>.'
 	var dirGuidance = 'For further guidance, consult <a href="https://www.w3.org/International/questions/qa-html-dir">Structural markup and right-to-left text in HTML</a> and <a href="https://www.w3.org/International/techniques/authoring-html#using">Setting up a right-to-left page</a>.'
-	var ifMisidentifiedGuidance = 'If the HTML checker has misidentified the language of this document, please <a href="https://github.com/validator/validator/issues/new">file an issue report</a> or <a href="mailto:www-validator@w3.org">send e-mail to report the problem</a>.'
+	var ifMisidentifiedGuidance = 'If the HTML checker has misidentified the language of this document, please <a href="https://github.com/validator/validator/issues/new?template=4-bad-language-detection.yml">file an issue report</a>.'
 	var langOrDirWarning
 	var langOrDirLinks
 	var ifMisidentifiedLinks
@@ -425,7 +464,7 @@ function installTextarea() {
 			if (!document.getElementById("csslabel")) {
 				var cssLabel = document.createElement("label")
 				cssLabel.setAttribute("id", "csslabel")
-				cssLabel.setAttribute("title", "Treat the input as CSS.")
+				cssLabel.setAttribute("title", "Check the text input as CSS, not as HTML.")
 				cssLabel.setAttribute("for", "css")
 				var cssCheckbox = document.createElement("input")
 				cssCheckbox.setAttribute("type", "checkbox")
@@ -453,7 +492,7 @@ function installTextarea() {
 					}
 				}, false)
 				cssLabel.appendChild(cssCheckbox)
-				cssLabel.appendChild(document.createTextNode("CSS"))
+				cssLabel.appendChild(document.createTextNode("check as CSS"))
 				inputRegion.appendChild(cssLabel)
 			}
 			inputRegion.appendChild(textarea)
@@ -461,14 +500,10 @@ function installTextarea() {
 		}
 	}
 	if (textareaHidden) {
-	  var submit = document.getElementById("submit")
-	  if (submit) {
-	    submit.parentNode.appendChild(textareaHidden)
-	  }
-	}
-	var showSource = document.getElementById("showsource")
-	if (showSource) {
-		showSource.checked = true
+		var submit = document.getElementById("submit")
+		if (submit) {
+			submit.parentNode.appendChild(textareaHidden)
+		}
 	}
 }
 
@@ -497,7 +532,7 @@ function installFileUpload() {
 		}
 	}
 	if (textareaHidden && textareaHidden.parentNode) {
-	  textareaHidden.parentNode.removeChild(textareaHidden)
+		textareaHidden.parentNode.removeChild(textareaHidden)
 	}
 }
 
@@ -519,7 +554,7 @@ function installUrlInput() {
 		}
 	}
 	if (textareaHidden && textareaHidden.parentNode) {
-	  textareaHidden.parentNode.removeChild(textareaHidden)
+		textareaHidden.parentNode.removeChild(textareaHidden)
 	}
 }
 
@@ -545,6 +580,36 @@ function copySourceIntoTextArea() {
 			li = li.nextSibling
 		}
 		textarea.value = strings.join('\n')
+		// Strip CSS-checking wrapper if it leaked into the source display.
+		// The server wraps CSS input in an HTML document with <style>; the
+		// source display normally strips this, but guard against stacking.
+		var cssProlog = "<!DOCTYPE html><html lang=\'\'><title>s</title><style>"
+		var cssEpilog = "</style>"
+		var v = textarea.value
+		if (v.indexOf(cssProlog) === 0
+				&& v.lastIndexOf(cssEpilog) === v.length - cssEpilog.length) {
+			v = v.substring(cssProlog.length, v.length - cssEpilog.length)
+			if (v.charAt(0) === '\n') v = v.substring(1)
+			if (v.charAt(v.length - 1) === '\n') v = v.substring(0, v.length - 1)
+			textarea.value = v
+		}
+	}
+}
+
+function hideSourceIfNotRequested() {
+	var showSourceCheckbox = document.getElementById("showsource")
+	if (showSourceCheckbox && !showSourceCheckbox.checked) {
+		var sourceHeading = document.getElementById('source')
+		if (sourceHeading) {
+			var sourceList = sourceHeading.nextSibling
+			while (sourceList && sourceList.nodeType != 1) {
+				sourceList = sourceList.nextSibling
+			}
+			if (sourceList && sourceList.className == 'source') {
+				sourceHeading.style.display = 'none'
+				sourceList.style.display = 'none'
+			}
+		}
 	}
 }
 
@@ -571,7 +636,7 @@ function updateFragmentIdHilite() {
 			newStyle.styleSheet.cssText = rule
 		} else {
 			throw ex
-		} 
+		}
 	}
 	dynamicStyle.parentNode.replaceChild(newStyle, dynamicStyle)
 	dynamicStyle = newStyle
@@ -612,6 +677,31 @@ if (document.getElementById) {
 	boot()
 }
 
+/**
+ * Categorizes a validation message as 'css', 'i18n', or 'html'.
+ * NOTE: This function is duplicated in site/message-category.js for unit testing.
+ * If you modify this function, update message-category.js to match.
+ */
+function getMessageCategory(messageText) {
+	// CSS validation errors (always prefixed with "CSS:")
+	if (/^CSS:/.test(messageText)) {
+		return 'css'
+	}
+
+	// Encoding and internationalization issues
+	if (/\b(encoding|charset|UTF-8|windows-\d+|iso-\d+|Content-Language)\b/i.test(messageText) ||
+		/appears to be written in/i.test(messageText) ||
+		/\b(lang|dir)=/i.test(messageText) ||
+		/"lang"/.test(messageText) ||
+		/"dir"/.test(messageText) ||
+		/Unicode Normalization/.test(messageText)) {
+		return 'i18n'
+	}
+
+	// Everything else is HTML (including ARIA)
+	return 'html'
+}
+
 function initFilters() {
 	var errors,
 		warnings,
@@ -639,16 +729,15 @@ function initFilters() {
 		replaceSuccessFailure()
 		return
 	}
-	if (document.getElementsByTagName('ol').length < 1) {
-		// If there's no <ol> on the page, then we have no
-		// messages to filter.
-		return
-	}
 
-	helptext = document.querySelector("#filters > div")
 	errors = document.getElementsByClassName("error")
 	warnings = document.getElementsByClassName('warning')
 	info = document.querySelectorAll('[class=info]')
+
+	if (errors.length === 0 && warnings.length === 0 && info.length === 0) {
+		// If there are no messages, we don’t need filtering
+		return
+	}
 	filters = document.createElement("section")
 	filters.id = "filters"
 	filters.className = "unexpanded"
@@ -670,6 +759,7 @@ function initFilters() {
 			legend,
 			hide,
 			show,
+			showHtml,
 			messageList,
 			messageGroupList,
 			checkbox,
@@ -682,7 +772,16 @@ function initFilters() {
 			type = displayType.toLowerCase(),
 			messageGroup,
 			uniqueMessage,
-			makeCheckbox
+			makeCheckbox,
+			categoryCounts = {html: 0, css: 0, i18n: 0},
+			messageTypeClass = ''
+
+		// Derive messageTypeClass from DOM elements
+		if (messages.length > 0) {
+			if (messages[0].classList.contains('error')) messageTypeClass = 'error'
+			else if (messages[0].classList.contains('warning')) messageTypeClass = 'warning'
+			else if (messages[0].classList.contains('info')) messageTypeClass = 'info'
+		}
 
 		makeCheckbox = function(messageName, messageCollection) {
 			var checkbox, label, listitem,
@@ -718,7 +817,7 @@ function initFilters() {
 
 		if (messages.length > 0) {
 
-			// Find the unique messages
+			// Find the unique messages and categorize them
 			for (var i = 0; i < messages.length; ++i) {
 				message = messages[i]
 				messageClone = messages[i].cloneNode(true)
@@ -750,6 +849,12 @@ function initFilters() {
 				}
 				var id = "vnuId" + idCount
 				message.id = id
+
+				// Add category as data attribute
+				var category = getMessageCategory(uniqueMessage)
+				message.setAttribute('data-category', category)
+				categoryCounts[category]++
+
 				messages[messageGroup].uniqueMessages[uniqueMessage].push(id)
 				idCount++
 			}
@@ -769,6 +874,18 @@ function initFilters() {
 			legend.appendChild(hide)
 			legend.appendChild(document.createTextNode(" · "))
 			legend.appendChild(show)
+
+			// Add "Show only HTML" link if we have non-HTML messages
+			if (categoryCounts.css > 0 || categoryCounts.i18n > 0) {
+				showHtml = document.createElement("a")
+				showHtml.href = ""
+				showHtml.className = "show-html"
+				showHtml.appendChild(document.createTextNode("Show only HTML " + type + " (" + categoryCounts.html + ")"))
+				showHtml.setAttribute('data-message-type', messageTypeClass)
+				legend.appendChild(document.createTextNode(" · "))
+				legend.appendChild(showHtml)
+			}
+
 			fieldset.appendChild(legend)
 
 			messageList = document.createElement("ol")
@@ -950,6 +1067,58 @@ function initFilters() {
 				}
 				if (supportsLocalStorage()) {
 					localStorage[box.vnuMessageType + ':' + box.vnuMessageName] = true
+				}
+			}
+			showCount()
+		}, false)
+	}
+
+	// Add event handlers for "Show only HTML" links
+	links = document.getElementsByClassName("show-html")
+	for (var n = 0; n < links.length; ++n) {
+		links[n].addEventListener("click", function(e) {
+			e.preventDefault()
+			// Use currentTarget to get the element the listener is attached to
+			var messageType = e.currentTarget.getAttribute('data-message-type')
+			// Get all messages of this type (errors, warnings, or info)
+			var allMessages = document.querySelectorAll("li." + messageType)
+
+			for (var i = 0; i < allMessages.length; ++i) {
+				var msg = allMessages[i]
+				if (!msg || !msg.id) continue
+				var category = msg.getAttribute('data-category')
+				var msgId = msg.id
+
+				if (category === 'html') {
+					// Show HTML messages
+					msg.className = msg.className.replace(/\s*hidden\s*/g, "")
+					// Update corresponding checkboxes
+					var boxes = document.querySelectorAll("input[type='checkbox']")
+					for (var k = 0; k < boxes.length; ++k) {
+						var box = boxes[k]
+						if (box.vnuMessageCollection && box.vnuMessageCollection.indexOf(msgId) !== -1) {
+							box.checked = true
+							if (supportsLocalStorage()) {
+								localStorage[box.vnuMessageType + ':' + box.vnuMessageName] = true
+							}
+						}
+					}
+				} else {
+					// Hide non-HTML messages (CSS and i18n)
+					if (msg.className.indexOf('hidden') === -1) {
+						msg.className += ' hidden'
+					}
+					// Update corresponding checkboxes
+					var boxes = document.querySelectorAll("input[type='checkbox']")
+					for (var k = 0; k < boxes.length; ++k) {
+						var box = boxes[k]
+						if (box.vnuMessageCollection && box.vnuMessageCollection.indexOf(msgId) !== -1) {
+							box.checked = false
+							if (supportsLocalStorage()) {
+								localStorage[box.vnuMessageType + ':' + box.vnuMessageName] = false
+							}
+						}
+					}
 				}
 			}
 			showCount()

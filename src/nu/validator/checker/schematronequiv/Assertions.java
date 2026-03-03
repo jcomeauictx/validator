@@ -39,6 +39,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import javax.json.Json;
+import javax.json.JsonException;
+import javax.json.JsonReader;
+import javax.json.JsonString;
+import javax.json.JsonStructure;
+
 import io.mola.galimatias.GalimatiasParseException;
 import io.mola.galimatias.URL;
 import nu.validator.checker.AttributeUtil;
@@ -65,9 +71,9 @@ import nu.validator.datatype.ImageCandidateStrings;
 import nu.validator.datatype.ImageCandidateURL;
 import nu.validator.htmlparser.impl.NCName;
 import nu.validator.messages.MessageEmitterAdapter;
+import nu.validator.xml.AttributesImpl;
 
-import org.eclipse.jetty.util.ajax.JSON;
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 import org.w3c.css.css.StyleSheetParser;
 import org.w3c.css.parser.CssError;
@@ -80,12 +86,7 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import org.apache.log4j.Logger;
-
 public class Assertions extends Checker {
-
-    private static final Logger log4j = //
-            Logger.getLogger(Assertions.class);
 
     private static boolean equalsIgnoreAsciiCase(String one, String other) {
         if (other == null) {
@@ -142,6 +143,52 @@ public class Assertions extends Checker {
         return "";
     }
 
+    /**
+     * Checks if a sizes attribute value starts with "auto" (case-insensitive).
+     * Per HTML spec, sizes can be exactly "auto" or start with "auto," for
+     * fallback support in browsers that don't understand auto.
+     */
+    private static final boolean sizesStartsWithAuto(String sizes) {
+        if (sizes == null) {
+            return false;
+        }
+        String trimmed = trimLeadingSpaces(sizes);
+        if (trimmed.length() < 4) {
+            return false;
+        }
+        char c0 = trimmed.charAt(0);
+        char c1 = trimmed.charAt(1);
+        char c2 = trimmed.charAt(2);
+        char c3 = trimmed.charAt(3);
+        if ((c0 == 'a' || c0 == 'A')
+                && (c1 == 'u' || c1 == 'U')
+                && (c2 == 't' || c2 == 'T')
+                && (c3 == 'o' || c3 == 'O')) {
+            // Check if it's exactly "auto" or "auto," (with optional whitespace)
+            if (trimmed.length() == 4) {
+                return true; // exactly "auto"
+            }
+            // Skip whitespace after "auto"
+            int i = 4;
+            while (i < trimmed.length()) {
+                char c = trimmed.charAt(i);
+                if (' ' == c || '\t' == c || '\n' == c || '\f' == c
+                        || '\r' == c) {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            if (i == trimmed.length()) {
+                return true; // "auto" followed by only whitespace
+            }
+            if (trimmed.charAt(i) == ',') {
+                return true; // "auto," with fallback values
+            }
+        }
+        return false;
+    }
+
     private static final Map<String, String[]> INPUT_ATTRIBUTES = new HashMap<>();
 
     static {
@@ -181,135 +228,184 @@ public class Assertions extends Checker {
     private static final Map<String, String> OBSOLETE_ELEMENTS = new HashMap<>();
 
     static {
+        OBSOLETE_ELEMENTS.put("applet", "Use “embed” or “object” element instead.");
+        OBSOLETE_ELEMENTS.put("acronym", "Use the “abbr” element instead.");
+        OBSOLETE_ELEMENTS.put("bgsound", "Use the “audio” element instead.");
+        OBSOLETE_ELEMENTS.put("dir", "Use the “ul” element instead.");
+        OBSOLETE_ELEMENTS.put("frame", "Use the “iframe” element and CSS instead, or use server-side includes.");
+        OBSOLETE_ELEMENTS.put("frameset", "Use the “iframe” element and CSS instead, or use server-side includes.");
+        OBSOLETE_ELEMENTS.put("noframes", "Use the “iframe” element and CSS instead, or use server-side includes.");
+        OBSOLETE_ELEMENTS.put("isindex", "Use the “form” element containing “input” element of type “text” instead.");
         OBSOLETE_ELEMENTS.put("keygen", "");
+        OBSOLETE_ELEMENTS.put("listing", "Use “pre” or “code” element instead.");
+        OBSOLETE_ELEMENTS.put("menuitem", "Use script to handle “contextmenu” event instead.");
+        OBSOLETE_ELEMENTS.put("nextid", "Use GUIDs instead.");
+        OBSOLETE_ELEMENTS.put("noembed", "Use the “object” element instead.");
+        OBSOLETE_ELEMENTS.put("param", "Use the “data” attribute of the “object” element to set the URL of the external resource.");
+        OBSOLETE_ELEMENTS.put("plaintext", "Use the “text/plain” MIME type instead.");
+        OBSOLETE_ELEMENTS.put("rtc", "");
+        OBSOLETE_ELEMENTS.put("strike", "Use “del” or “s” element instead.");
+        OBSOLETE_ELEMENTS.put("xmp", "Use “pre” or “code” element instead.");
+        OBSOLETE_ELEMENTS.put("basefont", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("big", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("blink", "Use CSS instead.");
         OBSOLETE_ELEMENTS.put("center", "Use CSS instead.");
         OBSOLETE_ELEMENTS.put("font", "Use CSS instead.");
-        OBSOLETE_ELEMENTS.put("big", "Use CSS instead.");
-        OBSOLETE_ELEMENTS.put("strike", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("marquee", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("multicol", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("nobr", "Use CSS instead.");
+        OBSOLETE_ELEMENTS.put("spacer", "Use CSS instead.");
         OBSOLETE_ELEMENTS.put("tt", "Use CSS instead.");
-        OBSOLETE_ELEMENTS.put("acronym",
-                "Use the \u201Cabbr\u201D element instead.");
-        OBSOLETE_ELEMENTS.put("dir", "Use the \u201Cul\u201D element instead.");
-        OBSOLETE_ELEMENTS.put("applet",
-                "Use the \u201Cobject\u201D element instead.");
-        OBSOLETE_ELEMENTS.put("basefont", "Use CSS instead.");
-        OBSOLETE_ELEMENTS.put("frameset",
-                "Use the \u201Ciframe\u201D element and CSS instead, or use server-side includes.");
-        OBSOLETE_ELEMENTS.put("noframes",
-                "Use the \u201Ciframe\u201D element and CSS instead, or use server-side includes.");
     }
 
-    private static final Map<String, String[]> OBSOLETE_ATTRIBUTES = new HashMap<>();
+    /**
+     * Collection that contains attribute name as key, while value is {@link Map} that contains element name as key and error message as a value.
+     */
+    private static final Map<String, Map<String, String>> OBSOLETE_ATTRIBUTES = new HashMap<>();
 
-    static {
-        OBSOLETE_ATTRIBUTES.put("abbr", new String[] { "td" });
-        OBSOLETE_ATTRIBUTES.put("archive", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("axis", new String[] { "td", "th" });
-        OBSOLETE_ATTRIBUTES.put("charset", new String[] { "link", "a" });
-        OBSOLETE_ATTRIBUTES.put("classid", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("code", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("codebase", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("codetype", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("coords", new String[] { "a" });
-        OBSOLETE_ATTRIBUTES.put("datafld", new String[] { "span", "div",
-                "object", "input", "select", "textarea", "button", "table" });
-        OBSOLETE_ATTRIBUTES.put("dataformatas", new String[] { "span", "div",
-                "object", "input", "select", "textarea", "button", "table" });
-        OBSOLETE_ATTRIBUTES.put("datasrc", new String[] { "span", "div",
-                "object", "input", "select", "textarea", "button", "table" });
-        OBSOLETE_ATTRIBUTES.put("datapagesize", new String[] { "table" });
-        OBSOLETE_ATTRIBUTES.put("declare", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("event", new String[] { "script" });
-        OBSOLETE_ATTRIBUTES.put("for", new String[] { "script" });
-        OBSOLETE_ATTRIBUTES.put("language", new String[] { "script" });
-        OBSOLETE_ATTRIBUTES.put("longdesc", new String[] { "img", "iframe" });
-        OBSOLETE_ATTRIBUTES.put("methods", new String[] { "link", "a" });
-        OBSOLETE_ATTRIBUTES.put("name",
-                new String[] { "img", "embed", "option" });
-        OBSOLETE_ATTRIBUTES.put("nohref", new String[] { "area" });
-        OBSOLETE_ATTRIBUTES.put("profile", new String[] { "head" });
-        OBSOLETE_ATTRIBUTES.put("scheme", new String[] { "meta" });
-        OBSOLETE_ATTRIBUTES.put("scope", new String[] { "td" });
-        OBSOLETE_ATTRIBUTES.put("shape", new String[] { "a" });
-        OBSOLETE_ATTRIBUTES.put("standby", new String[] { "object" });
-        OBSOLETE_ATTRIBUTES.put("target", new String[] { "link" });
-        OBSOLETE_ATTRIBUTES.put("type", new String[] { "param" });
-        OBSOLETE_ATTRIBUTES.put("urn", new String[] { "a", "link" });
-        OBSOLETE_ATTRIBUTES.put("usemap", new String[] { "input" });
-        OBSOLETE_ATTRIBUTES.put("valuetype", new String[] { "param" });
-        OBSOLETE_ATTRIBUTES.put("version", new String[] { "html" });
-        OBSOLETE_ATTRIBUTES.put("manifest", new String[] { "html" });
-
-        for (String[] elementNames: OBSOLETE_ATTRIBUTES.values()) {
-            Arrays.sort(elementNames);
+    private static void registerObsoleteAttribute(String name, String[] elements, String suggestion) {
+        Map<String, String> map = OBSOLETE_ATTRIBUTES.computeIfAbsent(name, k -> new HashMap<>());
+        for(String element : elements) {
+            map.put(element, suggestion);
         }
     }
 
-    private static final Map<String, String> OBSOLETE_ATTRIBUTES_MSG = new HashMap<>();
-
     static {
-        OBSOLETE_ATTRIBUTES_MSG.put("abbr",
+        registerObsoleteAttribute("abbr",
+                new String[] { "td" },
                 "Consider instead beginning the cell contents with concise text, followed by further elaboration if needed.");
-        OBSOLETE_ATTRIBUTES_MSG.put("archive",
-                "Use the \u201Cdata\u201D and \u201Ctype\u201D attributes to invoke plugins. To set a parameter with the name \u201Carchive\u201D, use the \u201Cparam\u201D element.");
-        OBSOLETE_ATTRIBUTES_MSG.put("axis",
-                "Use the \u201Cscope\u201D attribute.");
-        OBSOLETE_ATTRIBUTES_MSG.put("charset",
+        registerObsoleteAttribute("accept",
+                new String[] { "form" },
+                "Use the “accept” attribute directly on the “input” elements instead.");
+        registerObsoleteAttribute("archive",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("a",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("axis",
+                new String[] { "td", "th" },
+                "Use the “scope” attribute.");
+        registerObsoleteAttribute("border",
+                new String[] { "input", "img", "object", "table" },
+                "Consider specifying “img { border: 0; }” in CSS instead.");
+        registerObsoleteAttribute("charset",
+                new String[] { "a", "link" },
                 "Use an HTTP Content-Type header on the linked resource instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("classid",
-                "Use the \u201Cdata\u201D and \u201Ctype\u201D attributes to invoke plugins. To set a parameter with the name \u201Cclassid\u201D, use the \u201Cparam\u201D element.");
-        OBSOLETE_ATTRIBUTES_MSG.put("code",
-                "Use the \u201Cdata\u201D and \u201Ctype\u201D attributes to invoke plugins. To set a parameter with the name \u201Ccode\u201D, use the \u201Cparam\u201D element.");
-        OBSOLETE_ATTRIBUTES_MSG.put("codebase",
-                "Use the \u201Cdata\u201D and \u201Ctype\u201D attributes to invoke plugins. To set a parameter with the name \u201Ccodebase\u201D, use the \u201Cparam\u201D element.");
-        OBSOLETE_ATTRIBUTES_MSG.put("codetype",
-                "Use the \u201Cdata\u201D and \u201Ctype\u201D attributes to invoke plugins. To set a parameter with the name \u201Ccodetype\u201D, use the \u201Cparam\u201D element.");
-        OBSOLETE_ATTRIBUTES_MSG.put("coords",
-                "Use \u201Carea\u201D instead of \u201Ca\u201D for image maps.");
-        OBSOLETE_ATTRIBUTES_MSG.put("datapagesize", "You can safely omit it.");
-        OBSOLETE_ATTRIBUTES_MSG.put("datafld",
+        registerObsoleteAttribute("classid",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("code",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("codebase",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("codetype",
+                new String[] { "object" },
+                "Use the “data” and “type” attributes to invoke plugins.");
+        registerObsoleteAttribute("coords",
+                new String[] { "a" },
+                "Use “area” instead of “a” for image maps.");
+        registerObsoleteAttribute("datafld",
+                new String[] { "a", "button", "div", "fieldset", "iframe", "img", "input", "label", "legend", "object", "select", "span", "textarea" },
                 "Use script and a mechanism such as XMLHttpRequest to populate the page dynamically");
-        OBSOLETE_ATTRIBUTES_MSG.put("dataformatas",
+        registerObsoleteAttribute("dataformatas",
+                new String[] { "button", "div", "input", "label", "legend", "object", "option", "select", "span", "table" },
                 "Use script and a mechanism such as XMLHttpRequest to populate the page dynamically");
-        OBSOLETE_ATTRIBUTES_MSG.put("datasrc",
+        registerObsoleteAttribute("datapagesize",
+                new String[] { "table" },
+                "You can safely omit it.");
+        registerObsoleteAttribute("datasrc",
+                new String[] { "a", "button", "div", "iframe", "img", "input", "label", "legend", "object", "option", "select", "span", "table", "textarea" },
                 "Use script and a mechanism such as XMLHttpRequest to populate the page dynamically");
-        OBSOLETE_ATTRIBUTES_MSG.put("for",
+        registerObsoleteAttribute("declare",
+                new String[] { "object" },
+                "Repeat the “object” element completely each time the resource is to be reused.");
+        registerObsoleteAttribute("event",
+                new String[] { "script" },
                 "Use DOM Events mechanisms to register event listeners.");
-        OBSOLETE_ATTRIBUTES_MSG.put("event",
+        registerObsoleteAttribute("for",
+                new String[] { "script" },
                 "Use DOM Events mechanisms to register event listeners.");
-        OBSOLETE_ATTRIBUTES_MSG.put("declare",
-                "Repeat the \u201Cobject\u201D element completely each time the resource is to be reused.");
-        OBSOLETE_ATTRIBUTES_MSG.put("language",
-                "Use the \u201Ctype\u201D attribute instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("longdesc",
-                "Use a regular \u201Ca\u201D element to link to the description.");
-        OBSOLETE_ATTRIBUTES_MSG.put("methods",
+        registerObsoleteAttribute("hreflang",
+                new String[] { "area" },
+                "You can safely omit it.");
+        registerObsoleteAttribute("ismap",
+                new String[] { "input" },
+                "You can safely omit it.");
+        registerObsoleteAttribute("label",
+                new String[] { "menu" },
+                "Use script to handle “contextmenu” event instead.");
+        registerObsoleteAttribute("language",
+                new String[] { "script" },
+                "Use the “type” attribute instead.");
+        registerObsoleteAttribute("longdesc",
+                new String[] { "iframe", "img" },
+                "Use a regular “a” element to link to the description.");
+        registerObsoleteAttribute("lowsrc",
+                new String[] { "img" },
+                "Use a progressive JPEG image instead.");
+        registerObsoleteAttribute("manifest",
+                new String[] { "html" },
+                "Use service workers instead.");
+        registerObsoleteAttribute("methods",
+                new String[] { "a", "link" },
                 "Use the HTTP OPTIONS feature instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("name",
-                "Use the \u201Cid\u201D attribute instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("nohref",
-                "Omitting the \u201Chref\u201D attribute is sufficient.");
-        OBSOLETE_ATTRIBUTES_MSG.put("profile",
-                "To declare which \u201Cmeta\u201D terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u201Clink\u201D element instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("scheme",
+        registerObsoleteAttribute("name",
+                new String[] { "a", "embed", "img", "option" },
+                "Use the “id” attribute instead.");
+        registerObsoleteAttribute("name",
+                new String[] { "a" },
+                "Consider putting an “id” attribute on the nearest container instead.");
+        registerObsoleteAttribute("nohref",
+                new String[] { "area" },
+                "Omitting the “href” attribute is sufficient.");
+        registerObsoleteAttribute("profile",
+                new String[] { "head" },
+                "To declare which “meta” terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a “link” element instead.");
+        registerObsoleteAttribute("scheme",
+                new String[] { "meta" },
                 "Use only one scheme per field, or make the scheme declaration part of the value.");
-        OBSOLETE_ATTRIBUTES_MSG.put("scope",
-                "Use the \u201Cscope\u201D attribute on a \u201Cth\u201D element instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("shape",
-                "Use \u201Carea\u201D instead of \u201Ca\u201D for image maps.");
-        OBSOLETE_ATTRIBUTES_MSG.put("standby",
+        registerObsoleteAttribute("scope",
+                new String[] { "td" },
+                "Use the “scope” attribute on a “th” element instead.");
+        registerObsoleteAttribute("shape",
+                new String[] { "a" },
+                "Use “area” instead of “a” for image maps.");
+        registerObsoleteAttribute("standby",
+                new String[] { "object" },
                 "Optimise the linked resource so that it loads quickly or, at least, incrementally.");
-        OBSOLETE_ATTRIBUTES_MSG.put("target", "You can safely omit it.");
-        OBSOLETE_ATTRIBUTES_MSG.put("type",
-                "Use the \u201Cname\u201D and \u201Cvalue\u201D attributes without declaring value types.");
-        OBSOLETE_ATTRIBUTES_MSG.put("urn",
-                "Specify the preferred persistent identifier using the \u201Chref\u201D attribute instead.");
-        OBSOLETE_ATTRIBUTES_MSG.put("usemap",
-                "Use the \u201Cimg\u201D element instead of the \u201Cinput\u201D element for image maps.");
-        OBSOLETE_ATTRIBUTES_MSG.put("valuetype",
-                "Use the \u201Cname\u201D and \u201Cvalue\u201D attributes without declaring value types.");
-        OBSOLETE_ATTRIBUTES_MSG.put("version", "You can safely omit it.");
-        OBSOLETE_ATTRIBUTES_MSG.put("manifest", "Use service workers instead.");
+        registerObsoleteAttribute("summary",
+                new String[] { "table" },
+                "Consider describing the structure of the “table” in a “caption” element or in a “figure” element containing the “table”; or, simplify the structure of the “table” so that no description is needed.");
+        registerObsoleteAttribute("target",
+                new String[] { "link" },
+                "You can safely omit it.");
+        registerObsoleteAttribute("type",
+                new String[] { "param" },
+                "Use the “name” and “value” attributes without declaring value types.");
+        registerObsoleteAttribute("type",
+                new String[] { "area" },
+                "You can safely omit it.");
+        registerObsoleteAttribute("type",
+                new String[] { "menu" },
+                "Use script to handle “contextmenu” event instead.");
+        registerObsoleteAttribute("typemustmatch",
+                new String[] { "object" },
+                "Avoid using “object” elements with untrusted resources.");
+        registerObsoleteAttribute("urn",
+                new String[] { "a", "link" },
+                "Specify the preferred persistent identifier using the “href” attribute instead.");
+        registerObsoleteAttribute("usemap",
+                new String[] { "input", "object" },
+                "Use the “img” element instead.");
+        registerObsoleteAttribute("valuetype",
+                new String[] { "param" },
+                "Use the “name” and “value” attributes without declaring value types.");
+        registerObsoleteAttribute("version",
+                new String[] { "html" },
+                "You can safely omit it.");
     }
 
     private static final Map<String, String[]> OBSOLETE_STYLE_ATTRS = new HashMap<>();
@@ -323,9 +419,10 @@ public class Assertions extends Checker {
         OBSOLETE_STYLE_ATTRS.put("alink", new String[] { "body" });
         OBSOLETE_STYLE_ATTRS.put("allowtransparency",
                 new String[] { "iframe" });
-        OBSOLETE_STYLE_ATTRS.put("background", new String[] { "body" });
+        OBSOLETE_STYLE_ATTRS.put("background", new String[] { "body", "table", "thead", "tbody", "tfoot", "tr", "td", "th" });
         OBSOLETE_STYLE_ATTRS.put("bgcolor",
                 new String[] { "table", "tr", "td", "th", "body" });
+        OBSOLETE_STYLE_ATTRS.put("bordercolor", new String[] { "table" });
         OBSOLETE_STYLE_ATTRS.put("cellpadding", new String[] { "table" });
         OBSOLETE_STYLE_ATTRS.put("cellspacing", new String[] { "table" });
         OBSOLETE_STYLE_ATTRS.put("char", new String[] { "col", "colgroup",
@@ -337,8 +434,9 @@ public class Assertions extends Checker {
         OBSOLETE_STYLE_ATTRS.put("compact",
                 new String[] { "dl", "menu", "ol", "ul" });
         OBSOLETE_STYLE_ATTRS.put("frameborder", new String[] { "iframe" });
+        OBSOLETE_STYLE_ATTRS.put("framespacing", new String[] { "iframe" });
         OBSOLETE_STYLE_ATTRS.put("frame", new String[] { "table" });
-        OBSOLETE_STYLE_ATTRS.put("height", new String[] { "td", "th" });
+        OBSOLETE_STYLE_ATTRS.put("height", new String[] { "table", "thead", "tbody", "tfoot", "tr", "td", "th" });
         OBSOLETE_STYLE_ATTRS.put("hspace",
                 new String[] { "embed", "iframe", "input", "img", "object" });
         OBSOLETE_STYLE_ATTRS.put("link", new String[] { "body" });
@@ -370,6 +468,14 @@ public class Assertions extends Checker {
         }
     }
 
+    private static final Map<String, String> OBSOLETE_GLOBAL_ATTRIBUTES = new HashMap<>();
+
+    static {
+        OBSOLETE_GLOBAL_ATTRIBUTES.put("contextmenu", "Use script to handle “contextmenu” event instead.");
+        OBSOLETE_GLOBAL_ATTRIBUTES.put("dropzone", "Use script to handle the “dragenter” and “dragover” events instead.");
+        OBSOLETE_GLOBAL_ATTRIBUTES.put("onshow", "Use script to handle “contextmenu” event instead.");
+    }
+
     private static final HashSet<String> JAVASCRIPT_MIME_TYPES = new HashSet<>();
 
     static {
@@ -395,6 +501,14 @@ public class Assertions extends Checker {
             "col", "colgroup", "head", "html", "link", "map", "meta",
             "noscript", "param", "script", "slot", "source", "style",
             "template", "title", "track" };
+
+    private static final String[] ARIA_GLOBAL_ATTRIBUTES = { "aria-atomic",
+        "aria-braillelabel", "aria-brailleroledescription", "aria-busy",
+        "aria-controls", "aria-current", "aria-describedby", "aria-details",
+        "aria-disabled", "aria-errormessage", "aria-flowto", "aria-haspopup",
+        "aria-hidden", "aria-invalid", "aria-keyshortcuts", "aria-label",
+        "aria-labelledby", "aria-live", "aria-owns", "aria-relevant",
+        "aria-roledescription", "aria-description" };
 
     private static final String[] INTERACTIVE_ELEMENTS = { "a", "button",
             "details", "dialog", "embed", "iframe", "label", "select",
@@ -429,6 +543,21 @@ public class Assertions extends Checker {
         }
         return -1;
     }
+
+    private static final Set<String> ROLES_WHICH_CANNOT_BE_NAMED =
+        new LinkedHashSet<>(
+                Arrays.asList("caption", "code", "deletion", "emphasis",
+                    "generic", "insertion", "paragraph", "presentation",
+                    "strong", "subscript", "superscript")
+                );
+
+    private static final Set<String> ELEMENTS_THAT_CAN_HAVE_A_NAME_ATTRIBUTE =
+            Set.of("button", "fieldset", "input", "output", "select",
+                    "textarea", "details", "form", "iframe", "object", "map",
+                    "meta", "slot");
+
+    private static final Set<String> SECTIONING_ELEMENTS =
+            Set.of("article", "aside", "main", "nav", "section");
 
     private static Map<String, Integer> ANCESTOR_MASK_BY_DESCENDANT = new HashMap<>();
 
@@ -471,7 +600,6 @@ public class Assertions extends Checker {
         registerProhibitedAncestor("dt", "section");
         registerProhibitedAncestor("dt", "h1");
         registerProhibitedAncestor("dt", "h2");
-        registerProhibitedAncestor("dt", "h2");
         registerProhibitedAncestor("dt", "h3");
         registerProhibitedAncestor("dt", "h4");
         registerProhibitedAncestor("dt", "h5");
@@ -483,7 +611,6 @@ public class Assertions extends Checker {
         registerProhibitedAncestor("th", "nav");
         registerProhibitedAncestor("th", "section");
         registerProhibitedAncestor("th", "h1");
-        registerProhibitedAncestor("th", "h2");
         registerProhibitedAncestor("th", "h2");
         registerProhibitedAncestor("th", "h3");
         registerProhibitedAncestor("th", "h4");
@@ -601,7 +728,6 @@ public class Assertions extends Checker {
         ELEMENTS_WITH_IMPLICIT_ROLE.put("fieldset", "group");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("figure", "figure");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("form", "form");
-        ELEMENTS_WITH_IMPLICIT_ROLE.put("footer", "contentinfo");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("h1", "heading");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("h2", "heading");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("h3", "heading");
@@ -609,7 +735,6 @@ public class Assertions extends Checker {
         ELEMENTS_WITH_IMPLICIT_ROLE.put("h5", "heading");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("h6", "heading");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("hr", "separator");
-        ELEMENTS_WITH_IMPLICIT_ROLE.put("header", "banner");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("img", "img");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("li", "listitem");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("link", "link");
@@ -620,6 +745,7 @@ public class Assertions extends Checker {
         ELEMENTS_WITH_IMPLICIT_ROLE.put("progress", "progressbar");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("section", "region");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("summary", "button");
+        ELEMENTS_WITH_IMPLICIT_ROLE.put("s", "deletion");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("table", "table");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("tbody", "rowgroup");
         ELEMENTS_WITH_IMPLICIT_ROLE.put("textarea", "textbox");
@@ -678,6 +804,84 @@ public class Assertions extends Checker {
         ATTRIBUTES_WITH_IMPLICIT_STATE_OR_PROPERTY.add("required");
         ATTRIBUTES_WITH_IMPLICIT_STATE_OR_PROPERTY.add("rowspan");
     }
+    
+    /**
+     * Map of global aria attributes as keys and array of roles for which they have been deprecated for, as values.
+     * Array of roles is sorted according to {@linkplain Comparable natural ordering}
+     */
+    private static final Map<String, String[]> ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE = new HashMap<>();
+    
+    static {
+        ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.put("aria-disabled", new String[] {
+                "alert", "alertdialog", "article", "associationlist",
+                "associationlistitemkey", "associationlistitemvalue", "banner",
+                "blockquote", "caption", "cell", "code", "command", "comment",
+                "complementary", "contentinfo", "definition", "deletion",
+                "dialog", "directory", "document", "emphasis", "feed", "figure",
+                "form", "generic", "heading", "img", "insertion", "landmark",
+                "list", "listitem", "log", "main", "mark", "marquee", "math",
+                "meter", "navigation", "note", "paragraph", "presentation",
+                "progressbar", "range", "region", "rowgroup", "search",
+                "section", "sectionhead", "status", "strong", "structure",
+                "subscript", "suggestion", "superscript", "table", "tabpanel",
+                "term", "time", "timer", "tooltip", "widget", "window" });
+        ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.put("aria-errormessage",
+                new String[] { "alert", "alertdialog", "article",
+                        "associationlist", "associationlistitemkey",
+                        "associationlistitemvalue", "banner", "blockquote",
+                        "button", "caption", "cell", "code", "command",
+                        "comment", "complementary", "composite", "contentinfo",
+                        "definition", "deletion", "dialog", "directory",
+                        "document", "emphasis", "feed", "figure", "form",
+                        "generic", "grid", "group", "heading", "img", "input",
+                        "insertion", "landmark", "link", "list", "listitem",
+                        "log", "main", "mark", "marquee", "math", "menu",
+                        "menubar", "menuitem", "menuitemcheckbox",
+                        "menuitemradio", "meter", "navigation", "note",
+                        "option", "paragraph", "presentation", "progressbar",
+                        "radio", "range", "region", "row", "rowgroup",
+                        "scrollbar", "search", "section", "sectionhead",
+                        "select", "separator", "status", "strong", "structure",
+                        "subscript", "suggestion", "superscript", "tab",
+                        "table", "tablist", "tabpanel", "term", "time", "timer",
+                        "toolbar", "tooltip", "treeitem", "widget", "window" });
+        ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.put("aria-haspopup", new String[] {
+                "alert", "alertdialog", "article", "associationlist",
+                "associationlistitemkey", "associationlistitemvalue", "banner",
+                "blockquote", "caption", "cell", "checkbox", "code", "command",
+                "comment", "complementary", "composite", "contentinfo",
+                "definition", "deletion", "dialog", "directory", "document",
+                "emphasis", "feed", "figure", "form", "generic", "grid",
+                "group", "heading", "img", "input", "insertion", "landmark",
+                "list", "listbox", "listitem", "log", "main", "mark", "marquee",
+                "math", "menu", "menubar", "meter", "navigation", "note",
+                "option", "paragraph", "presentation", "progressbar", "radio",
+                "radiogroup", "range", "region", "row", "rowgroup", "scrollbar",
+                "search", "section", "sectionhead", "select", "separator",
+                "spinbutton", "status", "strong", "structure", "subscript",
+                "suggestion", "superscript", "switch", "table", "tablist",
+                "tabpanel", "term", "time", "timer", "toolbar", "tooltip",
+                "tree", "treegrid", "widget", "window" });
+        ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.put("aria-invalid", new String[] {
+                "alert", "alertdialog", "article", "associationlist",
+                "associationlistitemkey", "associationlistitemvalue", "banner",
+                "blockquote", "button", "caption", "cell", "code", "command",
+                "comment", "complementary", "composite", "contentinfo",
+                "definition", "deletion", "dialog", "directory", "document",
+                "emphasis", "feed", "figure", "form", "generic", "grid",
+                "group", "heading", "img", "input", "insertion", "landmark",
+                "link", "list", "listitem", "log", "main", "mark", "marquee",
+                "math", "menu", "menubar", "menuitem", "menuitemcheckbox",
+                "menuitemradio", "meter", "navigation", "note", "option",
+                "paragraph", "presentation", "progressbar", "radio", "range",
+                "region", "row", "rowgroup", "scrollbar", "search", "section",
+                "sectionhead", "select", "separator", "status", "strong",
+                "structure", "subscript", "suggestion", "superscript", "tab",
+                "table", "tablist", "tabpanel", "term", "time", "timer",
+                "toolbar", "tooltip", "treeitem", "widget", "window" });
+        ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.put("aria-level",
+                new String[] { "listitem" });
+    }
 
     /**
      * Names of link types that are considered as "External Resource" according to https://html.spec.whatwg.org/multipage/links.html#linkTypes
@@ -686,9 +890,66 @@ public class Assertions extends Checker {
             "dns-prefetch", "icon", "manifest", "modulepreload", "pingback", "preconnect", "prefetch", "preload", "prerender", "stylesheet"
     };
 
+    private static final Set<String> PRELOAD_DESTINATIONS = new HashSet<>(
+            Arrays.asList("fetch", "font", "image", "script", "style",
+                    "track"));
+
+    private static final Set<String> MODULE_PRELOAD_DESTINATIONS = new HashSet<>(
+            Arrays.asList("audioworklet", "json", "paintworklet", "script",
+                    "serviceworker", "sharedworker", "style", "worker"));
+
+    private static final Set<String> HTML_ELEMENTS = new HashSet<>(Arrays.asList(
+            "a", "abbr", "acronym", "address", "annotation-xml", "applet", "area",
+            "article", "aside", "attachment", "audio", "b", "base", "basefont", "bdi",
+            "bdo", "bgsound", "big", "blockquote", "body", "br", "button", "canvas",
+            "caption", "center", "cite", "code", "col", "colgroup", "color-profile",
+            "data", "datalist", "dd", "del", "details", "dfn", "dialog", "dir", "div",
+            "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "font",
+            "font-face", "font-face-format", "font-face-name", "font-face-src",
+            "font-face-uri", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4",
+            "h5", "h6", "head", "header", "hgroup", "hr", "html", "i", "iframe", "image",
+            "img", "input", "ins", "kbd", "keygen", "label", "legend", "li", "link",
+            "listing", "main", "map", "mark", "marquee", "menu", "meta", "meter",
+            "missing-glyph", "model", "nav", "nobr", "noembed", "noframes", "noscript",
+            "object", "ol", "optgroup", "option", "output", "p", "param", "picture",
+            "plaintext", "pre", "progress", "q", "rb", "rp", "rt", "rtc", "ruby", "s",
+            "samp", "script", "search", "section", "select", "selectedcontent", "slot",
+            "small", "source", "span", "strike", "strong", "style", "sub", "summary",
+            "sup", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+            "time", "title", "tr", "track", "tt", "u", "ul", "var", "video", "wbr", "xmp"
+    ));
+
+    private static final Set<String> MATHML_ELEMENTS = new HashSet<>(Arrays.asList(
+            "annotation", "annotation-xml", "maction", "maligngroup", "malignmark", "math",
+            "menclose", "merror", "mfenced", "mfrac", "mglyph", "mi", "mlabeledtr",
+            "mlongdiv", "mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom",
+            "mprescripts", "mroot", "mrow", "ms", "mscarries", "mscarry", "msgroup",
+            "msline", "mspace", "msqrt", "msrow", "mstack", "mstyle", "msub", "msubsup",
+            "msup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover", "none",
+            "semantics"
+    ));
+
+    private static final Set<String> SVG_ELEMENTS = new HashSet<>(Arrays.asList(
+            "a", "altGlyph", "altGlyphDef", "altGlyphItem", "animate", "animateColor",
+            "animateMotion", "animateTransform", "circle", "clipPath", "color-profile",
+            "cursor", "defs", "desc", "ellipse", "feBlend", "feColorMatrix",
+            "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting",
+            "feDisplacementMap", "feDistantLight", "feDropShadow", "feFlood", "feFuncA",
+            "feFuncB", "feFuncG", "feFuncR", "feGaussianBlur", "feImage", "feMerge",
+            "feMergeNode", "feMorphology", "feOffset", "fePointLight",
+            "feSpecularLighting", "feSpotLight", "feTile", "feTurbulence", "filter",
+            "font", "font-face", "font-face-format", "font-face-name", "font-face-src",
+            "font-face-uri", "foreignObject", "g", "glyph", "glyphRef", "hkern", "image",
+            "line", "linearGradient", "marker", "mask", "metadata", "missing-glyph",
+            "mpath", "path", "pattern", "polygon", "polyline", "radialGradient", "rect",
+            "script", "set", "stop", "style", "svg", "switch", "symbol", "text",
+            "textPath", "title", "tref", "tspan", "use", "view", "vkern"
+    ));
+
     private static final String h1WarningMessage = "Consider using the"
-            + " \u201Ch1\u201D element as a top-level heading only (all"
-            + " \u201Ch1\u201D elements are treated as top-level headings"
+            + " “h1” element as a top-level heading only — or else"
+            + " use the “headingoffset” attribute (otherwise, all"
+            + " “h1” elements are treated as top-level headings"
             + " by many screen readers and other tools).";
 
     private class IdrefLocator {
@@ -742,6 +1003,38 @@ public class Assertions extends Checker {
         }
     }
 
+    public class IdReference {
+        private final Locator locator;
+        private final String idref;
+        private final String elementName;
+        private final Attributes attributes;
+        public IdReference(Locator locator, String idref, String elementName,
+                Attributes attributes) {
+            this.locator = locator;
+            this.idref = idref;
+            this.elementName = elementName;
+            this.attributes = attributes;
+        }
+        public Locator getLocator() { return locator; }
+        public String getIdref() { return idref; }
+        public String getElementName() { return elementName; }
+        public Attributes getAttributes() { return attributes; }
+    }
+
+    private class Element {
+        private final Locator locator;
+        private final String name;
+        private final Attributes attributes;
+        public Element(Locator locator, String name, Attributes attributes) {
+            this.locator = locator;
+            this.name = name;
+            this.attributes = attributes;
+        }
+        public Locator getLocator() { return locator; }
+        public String getName() { return name; }
+        public Attributes getAttributes() { return attributes; }
+    }
+
     private class StackNode {
         private final int ancestorMask;
 
@@ -751,9 +1044,13 @@ public class Assertions extends Checker {
 
         private final String role;
 
+        private List<String> roles;
+
         private final String activeDescendant;
 
         private final String forAttr;
+
+        private final Attributes atts;
 
         private Set<Locator> imagesLackingAlt = new HashSet<>();
 
@@ -789,6 +1086,10 @@ public class Assertions extends Checker {
 
         private boolean isCollectingCharacters = false;
 
+        private boolean hasTabularRubyMarkup = false;
+
+        private int consecutiveRbCount = 0;
+
         private Locator captionNestedInFigure;
 
         private boolean isCollectingChildren = false;
@@ -799,12 +1100,15 @@ public class Assertions extends Checker {
          * @param ancestorMask
          */
         public StackNode(int ancestorMask, String name, String role,
-                String activeDescendant, String forAttr) {
+               List<String> roles, String activeDescendant, String forAttr,
+               Attributes atts) {
             this.ancestorMask = ancestorMask;
             this.name = name;
             this.role = role;
+            this.roles = roles;
             this.activeDescendant = activeDescendant;
             this.forAttr = forAttr;
+            this.atts = atts;
             this.textContent = new StringBuilder();
         }
 
@@ -1169,6 +1473,26 @@ public class Assertions extends Checker {
             collectedChildren.add(node);
         }
 
+        public boolean hasTabularRubyMarkup() {
+            return hasTabularRubyMarkup;
+        }
+
+        public void setTabularRubyMarkup() {
+            this.hasTabularRubyMarkup = true;
+        }
+
+        public int getConsecutiveRbCount() {
+            return consecutiveRbCount;
+        }
+
+        public void incrementConsecutiveRbCount() {
+            this.consecutiveRbCount++;
+        }
+
+        public void resetConsecutiveRbCount() {
+            this.consecutiveRbCount = 0;
+        }
+
         public List<StackNode> getCollectedChildren() {
             return collectedChildren == null ? Collections.emptyList()
                     : collectedChildren;
@@ -1178,6 +1502,8 @@ public class Assertions extends Checker {
     private StackNode[] stack;
 
     private int currentPtr;
+
+    private int currentRubyPtr = -1;
 
     public Assertions() {
         super();
@@ -1191,75 +1517,56 @@ public class Assertions extends Checker {
         this.sourceIsCss = sourceIsCss;
     }
 
-    private boolean hasPageEmitterInCallStack() {
-        for (StackTraceElement el : Thread.currentThread().getStackTrace()) {
-            if (el.getClassName().equals("nu.validator.servlet.PageEmitter")) {
-                return true;
-            }
-        }
+    private boolean isProhibitedFromBeingNamed(String localName,
+            List<String> roles, Attributes atts) {
+        if (// https://github.com/validator/validator/issues/1334
+                (localName.contains("-") // custom element
+                || "a" == localName && atts.getIndex("", "href") == -1)
+                || "abbr" == localName
+                || ("area" == localName && atts.getIndex("", "href") == -1)
+                || "b" == localName
+                || "bdi" == localName
+                || "bdo" == localName
+                || "body" == localName
+                || "caption" == localName
+                || "cite" == localName
+                || "code" == localName
+                || "data" == localName
+                || "del" == localName
+                || "div" == localName
+                || "em" == localName
+                || "figcaption" == localName
+                || "i" == localName
+                || "ins" == localName
+                || "kbd" == localName
+                || "legend" == localName
+                || "mark" == localName
+                || "p" == localName
+                || "pre" == localName
+                || "q" == localName
+                || "rp" == localName
+                || "rt" == localName
+                || "s" == localName
+                || "samp" == localName
+                || "small" == localName
+                || "span" == localName
+                || "strong" == localName
+                || "sub" == localName
+                || "sup" == localName
+                || "time" == localName
+                || "u" == localName
+                || "var" == localName) {
+                    if (roles != null) {
+                        for (String roleValue : roles) {
+                            if (ROLES_WHICH_CANNOT_BE_NAMED.contains(roleValue)) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    return true;
+                }
         return false;
-    }
-
-    private boolean isAriaLabelMisuse(String ariaLabel, String localName,
-            String role, Attributes atts) {
-        if (ariaLabel == "") {
-            return false;
-        }
-        if (ariaLabel == null) {
-            return false;
-        }
-        if (Arrays.binarySearch(INTERACTIVE_ELEMENTS, localName) >= 0) {
-            return false;
-        }
-        if (isLabelableElement(localName, atts)) {
-            return false;
-        }
-        // https://html5accessibility.com/stuff/2020/11/07/not-so-short-note-on-aria-label-usage-big-table-edition/
-        if (//
-                // "a" == localName // INTERACTIVE_ELEMENTS
-                "area" == localName // https://github.com/validator/validator/issues/775#issuecomment-494455608
-                || "article" == localName //
-                || "aside" == localName //
-                || "audio" == localName //
-                // "button" == localName // INTERACTIVE_ELEMENTS
-                // "details" == localName // INTERACTIVE_ELEMENTS
-                // "dialog" == localName // INTERACTIVE_ELEMENTS
-                || "dl" == localName //
-                || "fieldset" == localName //
-                || "figure" == localName //
-                || "footer" == localName //
-                || "form" == localName //
-                || "h1" == localName //
-                || "h2" == localName //
-                || "h3" == localName //
-                || "h4" == localName //
-                || "h5" == localName //
-                || "h6" == localName //
-                || "header" == localName //
-                || "hr" == localName //
-                // "iframe" == localName // INTERACTIVE_ELEMENTS
-                || "img" == localName // https://github.com/validator/validator/issues/775
-                // "input" == localName // isLabelableElement
-                || "main" == localName //
-                // "meter" == localName // isLabelableElement
-                || "nav" == localName //
-                || "ol" == localName //
-                // "progress" == localName // isLabelableElement
-                || "section" == localName //
-                // "select" == localName // isLabelableElement
-                || "summary" == localName // https://github.com/validator/validator/issues/775#issuecomment-494459220
-                || "svg" == localName //
-                || "table" == localName //
-                // "textarea" == localName // INTERACTIVE_ELEMENTS
-                || "video" == localName //
-                || "ul" == localName //
-        ) {
-            return false;
-        }
-        if (role != null) {
-            return false;
-        }
-        return true;
     }
 
     private boolean isLabelableElement(String localName, Attributes atts) {
@@ -1310,37 +1617,49 @@ public class Assertions extends Checker {
 
     private Map<StackNode, Locator> openActiveDescendants = new HashMap<>();
 
-    private LinkedHashSet<IdrefLocator> formControlReferences = new LinkedHashSet<>();
+    private LinkedHashSet<IdReference> formControlReferences = new LinkedHashSet<>();
+
+    private LinkedHashSet<IdrefLocator> commandForReferences = new LinkedHashSet<>();
 
     private LinkedHashSet<IdrefLocator> formElementReferences = new LinkedHashSet<>();
 
     private LinkedHashSet<IdrefLocator> needsAriaOwner = new LinkedHashSet<>();
 
-    private Set<String> formControlIds = new HashSet<>();
+    private Map<String, Element> formControlIds = new HashMap<>();
 
-    private Set<String> formElementIds = new HashSet<>();
+    private Map<String, Element> formElementIds = new HashMap<>();
 
     private LinkedHashSet<IdrefLocator> listReferences = new LinkedHashSet<>();
 
-    private Set<String> listIds = new HashSet<>();
+    private Map<String, Element> listIds = new HashMap<>();
 
     private LinkedHashSet<IdrefLocator> ariaReferences = new LinkedHashSet<>();
 
-    private Set<String> allIds = new HashSet<>();
+    private Map<String, Element> allIds = new HashMap<>();
+
+    private Map<String, Element> tabpanelElements = new HashMap<>();
+
+    private Map<String, Element> tabElementsActive = new HashMap<>();
 
     private int currentFigurePtr;
 
     private int currentHeadingPtr;
 
+    private boolean hasHeadingoffset;
+
     private final LinkedList<Integer> sectioningElementPtrs = new LinkedList<>();
 
     private boolean hasVisibleMain;
+
+    private boolean hasVisibleMainRole;
 
     private boolean hasMetaCharset;
 
     private boolean hasMetaDescription;
 
     private boolean hasContentTypePragma;
+
+    private boolean hasLinkOrScript;
 
     private boolean hasAutofocus;
 
@@ -1360,29 +1679,30 @@ public class Assertions extends Checker {
 
     private final void errContainedInOrOwnedBy(String role, Locator locator)
             throws SAXException {
-        err("An element with \u201Crole=" + role + "\u201D"
-                + " must be contained in, or owned by, an element with "
+        err("An element with “role=" + role + "”"
+                + " must be contained in, or owned by, an element with the "
+                + "“role” value "
                 + renderRoleSet(REQUIRED_ROLE_ANCESTOR_BY_DESCENDANT.get(role))
                 + ".", locator);
     }
 
     private final void errObsoleteAttribute(String attribute, String element,
             String suggestion) throws SAXException {
-        err("The \u201C" + attribute + "\u201D attribute on the \u201C"
-                + element + "\u201D element is obsolete." + suggestion);
+        err("The “" + attribute + "” attribute on the “"
+                + element + "” element is obsolete." + suggestion);
     }
 
     private final void warnObsoleteAttribute(String attribute, String element,
             String suggestion) throws SAXException {
-        warn("The \u201C" + attribute + "\u201D attribute on the \u201C"
-                + element + "\u201D element is obsolete." + suggestion);
+        warn("The “" + attribute + "” attribute on the “"
+                + element + "” element is obsolete." + suggestion);
     }
 
     private final void warnExplicitRoleUnnecessaryForType(String element,
             String role, String type) throws SAXException {
-        warn("The \u201C" + role + "\u201D role is unnecessary for element"
-                + " \u201C" + element + "\u201D whose" + " type is" + " \u201C"
-                + type + "\u201D.");
+        warn("The “" + role + "” role is unnecessary for element"
+                + " “" + element + "” whose" + " type is" + " “"
+                + type + "”.");
     }
 
     private boolean currentElementHasRequiredAncestorRole(
@@ -1408,6 +1728,16 @@ public class Assertions extends Checker {
         return false;
     }
 
+    private boolean isDescendantOfSectioningElement() {
+        for (int i = 0; i < currentPtr; i++) {
+            String name = stack[currentPtr - i].getName();
+            if (name != null && SECTIONING_ELEMENTS.contains(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void checkForInteractiveAncestorRole(String descendantUiString)
             throws SAXException {
         for (int i = 0; i < currentPtr; i++) {
@@ -1418,7 +1748,7 @@ public class Assertions extends Checker {
                             ancestorRole) >= 0) {
                 err(descendantUiString + " must not appear as a"
                         + " descendant of an element with the attribute"
-                        + " \u201Crole=" + ancestorRole + "\u201D.");
+                        + " “role=" + ancestorRole + "”.");
             }
         }
     }
@@ -1429,36 +1759,97 @@ public class Assertions extends Checker {
     @Override
     public void endDocument() throws SAXException {
         // label for
-        for (IdrefLocator idrefLocator : formControlReferences) {
-            if (!formControlIds.contains(idrefLocator.getIdref())) {
-                err("The value of the \u201Cfor\u201D attribute of the"
-                        + " \u201Clabel\u201D element must be the ID of a"
+        for (IdReference label : formControlReferences) {
+            String idref = label.getIdref();
+            Element referencedElement = formControlIds.get(idref);
+            if (referencedElement == null) {
+                err("The value of the “for” attribute of the"
+                        + " “label” element must be the ID of a"
                         + " non-hidden form control.",
-                        idrefLocator.getLocator());
+                        label.getLocator());
+            } else if (isLabelableElement(referencedElement.getName(),
+                        referencedElement.getAttributes())) {
+                Attributes labelAttributes = label.getAttributes();
+                if (labelAttributes.getIndex("", "role") > -1) {
+                    err("The “role” attribute must not be used on any"
+                            + " “label” element that is associated"
+                            + " with a labelable element.",
+                            label.getLocator());
+                }
+                for (int i = 0; i < labelAttributes.getLength(); i++) {
+                    String attLocal = labelAttributes.getLocalName(i);
+                    if (attLocal.startsWith("aria-")) {
+                        err("The “" + attLocal + "” attribute must not"
+                                + " be used on any “label” element"
+                                + " that is associated with a labelable element.",
+                                label.getLocator());
+                    }
+                }
             }
         }
 
+        // button commandfor
+        for (IdrefLocator idrefLocator : commandForReferences) {
+            if (!allIds.containsKey(idrefLocator.getIdref())) {
+                err("The value of the “commandfor” attribute of the"
+                        + " “button” element must be the ID of an"
+                        + " element in the same tree as the"
+                        + " “button” with the “commandfor”"
+                        + " attribute.",
+                        idrefLocator.getLocator());
+            }
+        }
         // references to IDs from form attributes
         for (IdrefLocator idrefLocator : formElementReferences) {
-            if (!formElementIds.contains(idrefLocator.getIdref())) {
-                err("The \u201Cform\u201D attribute must refer to a form element.",
+            if (!formElementIds.containsKey(idrefLocator.getIdref())) {
+                err("The “form” attribute must refer to a form element.",
                         idrefLocator.getLocator());
             }
         }
 
         // input list
         for (IdrefLocator idrefLocator : listReferences) {
-            if (!listIds.contains(idrefLocator.getIdref())) {
-                err("The \u201Clist\u201D attribute of the \u201Cinput\u201D element must refer to a \u201Cdatalist\u201D element.",
+            if (!listIds.containsKey(idrefLocator.getIdref())) {
+                err("The “list” attribute of the “input” element must refer to a “datalist” element.",
                         idrefLocator.getLocator());
             }
         }
 
+        tabElements:
+        for (Map.Entry<String, Element> tabEntry :
+                tabElementsActive.entrySet()) {
+            String tabId = tabEntry.getKey();
+            Element tab = tabEntry.getValue();
+            String controlsValue = tab.getAttributes()
+                .getValue("", "aria-controls");
+            if (controlsValue != null) {
+                if (tabpanelElements.containsKey(controlsValue)) {
+                    continue;
+                }
+            }
+            for (Map.Entry<String, Element> tabpanelEntry :
+                    tabpanelElements.entrySet()) {
+                Element tabpanel = tabpanelEntry.getValue();
+                String arialabelledbyValue = tabpanel.getAttributes()
+                    .getValue("", "aria-labelledby");
+                if (arialabelledbyValue != null) {
+                    if (arialabelledbyValue.equals(tabId)) {
+                        continue tabElements;
+                    }
+                }
+            }
+            err("Every active “role=tab” element must have a"
+                    + " corresponding “role=tabpanel” element.",
+                    tab.getLocator());
+        }
+
         // ARIA idrefs
         for (IdrefLocator idrefLocator : ariaReferences) {
-            if (!allIds.contains(idrefLocator.getIdref())) {
-                err("The \u201C" + idrefLocator.getAdditional()
-                        + "\u201D attribute must point to an element in the same document.",
+            if (!allIds.containsKey(idrefLocator.getIdref())) {
+                err("The “" + idrefLocator.getAdditional()
+                        + "” attribute references “"
+                        + idrefLocator.getIdref() + "”, which is not"
+                        + " the ID of any element in this document.",
                         idrefLocator.getLocator());
             }
         }
@@ -1482,7 +1873,7 @@ public class Assertions extends Checker {
             }
         }
 
-        if (hasTopLevelH1) {
+        if (hasTopLevelH1 && !hasHeadingoffset) {
             for (Locator locator : secondLevelH1s) {
                 warn(h1WarningMessage, locator);
             }
@@ -1512,6 +1903,7 @@ public class Assertions extends Checker {
     @Override
     public void endElement(String uri, String localName, String name)
             throws SAXException {
+
         if ("http://www.w3.org/1999/xhtml" == uri
                 && "template".equals(localName)) {
             numberOfTemplatesDeep--;
@@ -1524,6 +1916,7 @@ public class Assertions extends Checker {
         if ("http://www.w3.org/2000/svg" == uri && "a".equals(localName)) {
             numberOfSvgAelementsDeep--;
         }
+        hasHeadingoffset = false;
         StackNode node = pop();
         String systemId = node.locator().getSystemId();
         String publicId = node.locator().getPublicId();
@@ -1533,16 +1926,18 @@ public class Assertions extends Checker {
         openMediaElements.remove(node);
         if ("http://www.w3.org/1999/xhtml" == uri) {
             if ("figure" == localName) {
-                if (node.hasFigcaptionContent() && (node.role != null)) {
-                    err("A \u201Cfigure\u201D element with a"
-                            + " \u201Cfigcaption\u201D descendant must not"
-                            + " have a \u201Crole\u201D attribute.");
+                if (node.hasFigcaptionContent() && node.role != null
+                        && !"figure".equals(node.role)
+                        && !"doc-example".equals(node.role)) {
+                    err("A “figure” element with a"
+                            + " “figcaption” descendant must not"
+                            + " have a “role” attribute.");
                 }
                 if ((node.needsFigcaption() && !node.hasFigcaptionContent())
                         || node.hasTextNode() || node.hasEmbeddedContent()) {
                     for (Locator imgLocator : node.getImagesLackingAlt()) {
-                        err("An \u201Cimg\u201D element must have an"
-                                + " \u201Calt\u201D attribute, except under"
+                        err("An “img” element must have an"
+                                + " “alt” attribute, except under"
                                 + " certain conditions. For details, consult"
                                 + " guidance on providing text alternatives"
                                 + " for images.", imgLocator);
@@ -1554,52 +1949,64 @@ public class Assertions extends Checker {
                                 s -> "figcaption" == s.getName())
                         && node.getCollectedChildren().stream().anyMatch(
                                 s -> "table" == s.getName())) {
-                    warn("When a \u201Ctable\u201D element is the only content"
-                            + " in a \u201Cfigure\u201D element other than the"
-                            + " \u201Cfigcaption\u201D, the \u201Ccaption\u201D"
+                    warn("When a “table” element is the only content"
+                            + " in a “figure” element other than the"
+                            + " “figcaption”, the “caption”"
                             + " element should be omitted in favor of the"
-                            + " \u201Cfigcaption\u201D.",
+                            + " “figcaption”.",
                             node.getCaptionNestedInFigure());
                 }
             } else if ("picture" == localName) {
                 siblingSources.clear();
+            } else if ("ruby" == localName) {
+                if (node.hasTabularRubyMarkup()) {
+                    info("Not all browsers position items appropriately"
+                            + " when \"tabular markup\" is used with"
+                            + " the “rb” element."
+                            + " See https://www.w3.org/International/articles"
+                            + "/ruby/markup.en.html#visual for more guidance.");
+                }
+                currentRubyPtr = -1;
+            } else if ("dialog" == localName
+                    || node.atts.getIndex("", "popover") > -1) {
+                hasAutofocus = false;
             } else if ("select" == localName && node.isOptionNeeded()) {
                 if (!node.hasOption()) {
-                    err("A \u201Cselect\u201D element with a"
-                            + " \u201Crequired\u201D attribute, and without a"
-                            + " \u201Cmultiple\u201D attribute, and without a"
-                            + " \u201Csize\u201D attribute whose value is"
+                    err("A “select” element with a"
+                            + " “required” attribute, and without a"
+                            + " “multiple” attribute, and without a"
+                            + " “size” attribute whose value is"
                             + " greater than"
-                            + " \u201C1\u201D, must have a child"
-                            + " \u201Coption\u201D element.");
+                            + " “1”, must have a child"
+                            + " “option” element.");
                 }
                 if (node.nonEmptyOptionLocator() != null) {
-                    err("The first child \u201Coption\u201D element of a"
-                            + " \u201Cselect\u201D element with a"
-                            + " \u201Crequired\u201D attribute, and without a"
-                            + " \u201Cmultiple\u201D attribute, and without a"
-                            + " \u201Csize\u201D attribute whose value is"
+                    err("The first child “option” element of a"
+                            + " “select” element with a"
+                            + " “required” attribute, and without a"
+                            + " “multiple” attribute, and without a"
+                            + " “size” attribute whose value is"
                             + " greater than"
-                            + " \u201C1\u201D, must have either an empty"
-                            + " \u201Cvalue\u201D attribute, or must have no"
+                            + " “1”, must have either an empty"
+                            + " “value” attribute, or must have no"
                             + " text content."
                             + " Consider either adding a placeholder option"
                             + " label, or adding a"
-                            + " \u201Csize\u201D attribute with a value equal"
+                            + " “size” attribute with a value equal"
                             + " to the number of"
-                            + " \u201Coption\u201D elements.",
+                            + " “option” elements.",
                             node.nonEmptyOptionLocator());
                 }
             } else if ("section" == localName && !node.hasHeading()) {
                 warn("Section lacks heading. Consider using"
-                        + " \u201ch2\u201d-\u201ch6\u201d elements to add"
+                        + " “h2”-“h6” elements to add"
                         + " identifying headings to all sections, or else"
-                        + " use a \u201cdiv\u201d element instead for any"
+                        + " use a “div” element instead for any"
                         + " cases where no heading is needed.",
                         node.locator());
             } else if ("article" == localName && !node.hasHeading()) {
                 warn("Article lacks heading. Consider using"
-                        + " \u201ch2\u201d-\u201ch6\u201d elements to add"
+                        + " “h2”-“h6” elements to add"
                         + " identifying headings to all articles.",
                         node.locator());
             } else if (("h1" == localName || "h2" == localName
@@ -1612,6 +2019,9 @@ public class Assertions extends Checker {
                 stack[currentPtr].setOptionFound();
             } else if ("style" == localName) {
                 String styleContents = node.getTextContent().toString();
+                if (styleContents.startsWith("\uFEFF")) {
+                    styleContents = styleContents.substring(1);
+                }
                 int lineOffset = 0;
                 if (styleContents.startsWith("\n")) {
                     lineOffset = 1;
@@ -1653,7 +2063,7 @@ public class Assertions extends Checker {
                             cssMessage = "Parse Error";
                         }
                         if (cpe.getProperty() != null) {
-                            cssProperty = String.format("\u201c%s\u201D: ",
+                            cssProperty = String.format("“%s”: ",
                                     cpe.getProperty());
                         }
                         if (cpe.getMessage() != null) {
@@ -1708,47 +2118,50 @@ public class Assertions extends Checker {
             }
         }
         if ((locator = openActiveDescendants.remove(node)) != null) {
-            warn("Attribute \u201Caria-activedescendant\u201D value should "
+            warn("Attribute “aria-activedescendant” value should "
                     + "either refer to a descendant element, or should "
-                    + "be accompanied by attribute \u201Caria-owns\u201D.",
+                    + "be accompanied by attribute “aria-owns”.",
                     locator);
         }
     }
 
     private boolean isImportMapValid(String scriptContent) throws SAXException {
-        Object importMap;
+        JsonStructure importMap;
         try {
-            importMap = new JSON().parse(new JSON.StringSource(scriptContent), true);
-        } catch (IllegalStateException e) {
-            err("A script \u201cscript\u201d with a \u201ctype\u201d attribute"
-                    + " whose value is \u201cimportmap\u201d must have valid"
+            JsonReader reader = Json.createReader(new StringReader(scriptContent));
+            importMap = reader.readObject();
+        } catch (JsonException e) {
+            err("A script “script” with a “type” attribute"
+                    + " whose value is “importmap” must have valid"
                     + " JSON content.");
             return false;
         }
         if (!(importMap instanceof Map)) {
-            err("A \u201cscript\u201d element with a \u201ctype\u201d attribute"
-                    + " whose value is \u201cimportmap\u201d must contain a"
+            err("A “script” element with a “type” attribute"
+                    + " whose value is “importmap” must contain a"
                     + " JSON object.");
             return false;
         }
 
-        Map<String, Object> importMapObject = (Map<String, Object>) importMap;
+        final Map<String, Object> importMapObject = (Map<String, Object>) importMap;
 
         for (Map.Entry<String, Object> importMapEntry : importMapObject.entrySet()) {
             String specifierType = importMapEntry.getKey();
             if (!"imports".equals(specifierType)
-                    && !"scopes".equals(specifierType)) {
-                err("A \u201cscript\u201d element with a \u201ctype\u201d"
-                        + " attribute whose value is \u201cimportmap\u201d must"
+                    && !"scopes".equals(specifierType)
+                    && !"integrity".equals(specifierType)) {
+                err("A “script” element with a “type”"
+                        + " attribute whose value is “importmap” must"
                         + " contain a JSON object with no properties other than"
-                        + " \u201cimports\u201d and \u201cscopes\u201d.");
+                        + " “imports”, “scopes”,"
+                        + " and “integrity”.");
                 return false;
             }
             if (!(importMapEntry.getValue() instanceof Map)) {
-                err("The value of the \u201c" + specifierType + "\u201d"
-                        + " property within the content of a \u201cscript\u201d"
-                        + " element with a \u201ctype\u201d attribute whose"
-                        + " value is \u201cimportmap\u201d must be a JSON"
+                err("The value of the “" + specifierType + "”"
+                        + " property within the content of a “script”"
+                        + " element with a “type” attribute whose"
+                        + " value is “importmap” must be a JSON"
                         + " object.");
                 return false;
             }
@@ -1763,19 +2176,19 @@ public class Assertions extends Checker {
                     }
                 } else if ("scopes".equals(specifierType)) {
                     if (!isValidURL(entry.getKey())) {
-                        err("The value of the \u201cscopes\u201d property"
-                                + " within the content of a \u201cscript\u201d"
-                                + " element with a \u201ctype\u201d attribute"
-                                + " whose value is \u201cimportmap\u201d must"
+                        err("The value of the “scopes” property"
+                                + " within the content of a “script”"
+                                + " element with a “type” attribute"
+                                + " whose value is “importmap” must"
                                 + " be a JSON object whose keys are valid URL"
                                 + " strings.");
                         return false;
                     }
                     if (!(entry.getValue() instanceof Map)) {
-                        err("The value of the \u201cscopes\u201d property"
-                                + " within the content of a \u201cscript\u201d"
-                                + " element with a \u201ctype\u201d attribute"
-                                + " whose value is \u201cimportmap\u201d must"
+                        err("The value of the “scopes” property"
+                                + " within the content of a “script”"
+                                + " element with a “type” attribute"
+                                + " whose value is “importmap” must"
                                 + " be a JSON object whose values are also"
                                 + " JSON objects.");
                         return false;
@@ -1796,37 +2209,37 @@ public class Assertions extends Checker {
     private boolean isSpecifierMapValid(String type, String key, Object value)
             throws SAXException {
         if (key.isEmpty()) {
-            err("A specifier map defined in a \u201c" + type + "\u201d"
-                    + " property within the content of a \u201cscript\u201d"
-                    + " element with a \u201ctype\u201d attribute whose value"
-                    + " is \u201cimportmap\u201d must only contain non-empty"
+            err("A specifier map defined in a “" + type + "”"
+                    + " property within the content of a “script”"
+                    + " element with a “type” attribute whose value"
+                    + " is “importmap” must only contain non-empty"
                     + " keys.");
             return false;
         }
-        if (!(value instanceof String)) {
-            err("A specifier map defined in a \u201c" + type + "\u201d"
-                    + " property within the content of a \u201cscript\u201d"
-                    + " element with a \u201ctype\u201d attribute whose value"
-                    + " is \u201cimportmap\u201d must only contain string"
+        if (!(value instanceof JsonString)) {
+            err("A specifier map defined in a “" + type + "”"
+                    + " property within the content of a “script”"
+                    + " element with a “type” attribute whose value"
+                    + " is “importmap” must only contain string"
                     + " values.");
             return false;
         }
-        String sValue = (String) value;
+        String sValue = ((JsonString) value).getString();
         if (!isValidURL(sValue)) {
-            err("A specifier map defined in a \u201c" + type + "\u201d"
-                    + " property within the content of a \u201cscript\u201d"
-                    + " element with a \u201ctype\u201d attribute whose value"
-                    + " is \u201cimportmap\u201d must only contain valid URL"
+            err("A specifier map defined in a “" + type + "”"
+                    + " property within the content of a “script”"
+                    + " element with a “type” attribute whose value"
+                    + " is “importmap” must only contain valid URL"
                     + " values.");
             return false;
         }
         if (key.endsWith("/") && !sValue.endsWith("/")) {
-            err("A specifier map defined in a \u201c" + type + "\u201d"
-                    + " property within the content of a \u201cscript\u201d"
-                    + " element with a \u201ctype\u201d attribute whose value"
-                    + " is \u201cimportmap\u201d must have values that end with"
-                    + " \u201c/\u201d when its corresponding key ends with"
-                    + " \u201c/\u201d.");
+            err("A specifier map defined in a “" + type + "”"
+                    + " property within the content of a “script”"
+                    + " element with a “type” attribute whose value"
+                    + " is “importmap” must have values that end with"
+                    + " “/” when its corresponding key ends with"
+                    + " “/”.");
             return false;
         }
         return true;
@@ -1836,7 +2249,7 @@ public class Assertions extends Checker {
         try {
             URL.parse(value);
             return true;
-        } catch (GalimatiasParseException e) {
+        } catch (GalimatiasParseException | StringIndexOutOfBoundsException e) {
         }
 
         if (value.startsWith("/") || value.startsWith("./")
@@ -1844,7 +2257,7 @@ public class Assertions extends Checker {
             try {
                 URL.parse("https://example.com/" + value);
                 return true;
-            } catch (GalimatiasParseException e) {
+            } catch (GalimatiasParseException | StringIndexOutOfBoundsException e) {
             }
         }
 
@@ -1864,14 +2277,17 @@ public class Assertions extends Checker {
         currentHeadingPtr = -1;
         stack[0] = null;
         hasVisibleMain = false;
+        hasVisibleMainRole = false;
         hasMetaCharset = false;
         hasMetaDescription = false;
         hasContentTypePragma = false;
         hasAutofocus = false;
+        hasLinkOrScript = false;
         hasTopLevelH1 = false;
         hasAncestorTableIsRoleTableGridOrTreeGrid = false;
         numberOfTemplatesDeep = 0;
         numberOfSvgAelementsDeep = 0;
+        hasHeadingoffset = false;
     }
 
     @Override
@@ -1883,6 +2299,7 @@ public class Assertions extends Checker {
         ariaOwnsIdsByRole.clear();
         needsAriaOwner.clear();
         formControlReferences.clear();
+        commandForReferences.clear();
         formElementReferences.clear();
         formControlIds.clear();
         formElementIds.clear();
@@ -1890,6 +2307,8 @@ public class Assertions extends Checker {
         listIds.clear();
         ariaReferences.clear();
         allIds.clear();
+        tabpanelElements.clear();
+        tabElementsActive.clear();
         siblingSources.clear();
         secondLevelH1s.clear();
         sectioningElementPtrs.clear();
@@ -1914,15 +2333,15 @@ public class Assertions extends Checker {
         if ("http://www.w3.org/2000/svg" == uri && "a".equals(localName)) {
             numberOfSvgAelementsDeep++;
             if (numberOfSvgAelementsDeep != 1) {
-                err("The SVG element \u201Ca\u201D must not appear as a"
-                        + " descendant of another SVG element \u201Ca\u201D.");
+                err("The SVG element “a” must not appear as a"
+                        + " descendant of another SVG element “a”.");
             }
         }
-        Set<String> ids = new HashSet<>();
+        Map<String, Element> ids = new HashMap<>();
         String role = null;
+        List<String> roles = null;
         String inputTypeVal = null;
         String activeDescendant = null;
-        String ariaLabel = null;
         String owns = null;
         String forAttr = null;
         boolean href = false;
@@ -1944,8 +2363,25 @@ public class Assertions extends Checker {
                 && "math".equals(localName) //
                 && atts.getIndex("", "role") > -1
                 && "math".equals(atts.getValue("", "role"))) {
-            warn("Element \u201Cmath\u201D does not need a"
-                    + " \u201Crole\u201D attribute.");
+            warn("Element “math” does not need a"
+                    + " “role” attribute.");
+        }
+        if ("http://www.w3.org/1999/xhtml" == uri
+                && !localName.contains("-")
+                && !HTML_ELEMENTS.contains(localName)) {
+            err("The “" + localName
+                    + "” element is a completely-unknown element that"
+                    + " is not allowed anywhere in any HTML content.");
+        } else if ("http://www.w3.org/2000/svg" == uri
+                && !SVG_ELEMENTS.contains(localName)) {
+            err("The “" + localName
+                    + "” element is a completely-unknown element that"
+                    + " is not allowed anywhere in any SVG content.");
+        } else if ("http://www.w3.org/1998/Math/MathML" == uri
+                && !MATHML_ELEMENTS.contains(localName)) {
+            err("The “" + localName
+                    + "” element is a completely-unknown element that"
+                    + " is not allowed anywhere in any MathML content.");
         }
         if ("http://www.w3.org/1999/xhtml" == uri) {
             boolean controls = false;
@@ -1971,52 +2407,75 @@ public class Assertions extends Checker {
             int len = atts.getLength();
             for (int i = 0; i < len; i++) {
                 String attUri = atts.getURI(i);
-                boolean isEmptyAtt = "".equals(atts.getValue(i));
+                String attLocal = atts.getLocalName(i);
+                boolean isEmptyAriaAttribute = "".equals(atts.getValue(i))
+                    && attLocal.startsWith("aria-");
                 if (attUri.length() == 0) {
-                    String attLocal = atts.getLocalName(i);
-                    if ("aria-hidden".equals(attLocal) && !isEmptyAtt) {
+                    if ("name".equals(attLocal)
+                            && !ELEMENTS_THAT_CAN_HAVE_A_NAME_ATTRIBUTE
+                                .contains(localName)) {
+                        info("The “name” attribute is never allowed"
+                                + " on the “" + localName + "”"
+                                + " element.");
+                    }
+                    if ("aria-hidden".equals(attLocal) && !isEmptyAriaAttribute) {
                         if (Arrays.binarySearch(
                                 ARIA_HIDDEN_NOT_ALLOWED_ELEMENTS,
                                 localName) >= 0) {
-                            err("The \u201Caria-hidden\u201D attribute must not"
-                                    + " be specified on the \u201C" + localName
-                                    + "\u201D element.");
+                            err("The “aria-hidden” attribute must not"
+                                    + " be specified on the “" + localName
+                                    + "” element.");
                         } else if ("input" == localName
                                 && "hidden".equals(atts.getValue("", "type"))) {
-                            err("The \u201Caria-hidden\u201D attribute must not"
-                                    + " be specified on an \u201Cinput\u201D"
-                                    + " element whose \u201Ctype\u201D"
+                            err("The “aria-hidden” attribute must not"
+                                    + " be specified on an “input”"
+                                    + " element whose “type”"
                                     + " attribute has the value"
-                                    + " \u201Chidden\u201D.");
+                                    + " “hidden”.");
                         }
-                    } else if (attLocal.startsWith("aria-") && !isEmptyAtt) {
+                        if ("body".equals(localName) &&
+                                "true".equals(atts.getValue(i))) {
+                            err("“aria-hidden=true” must not be used"
+                                    + " on the “body” element.");
+                        }
+                    } else if (attLocal.startsWith("aria-") && !isEmptyAriaAttribute) {
                         hasAriaAttributesOtherThanAriaHidden = true;
                     }
                     if (ATTRIBUTES_WITH_IMPLICIT_STATE_OR_PROPERTY.contains(
-                            attLocal) && !isEmptyAtt) {
+                            attLocal) && (!isEmptyAriaAttribute || "hidden".equals(attLocal))) {
                         String stateOrProperty = "aria-" + attLocal;
                         if (atts.getIndex("", stateOrProperty) > -1) {
                             String attLocalValue = atts.getValue("", attLocal);
                             String stateOrPropertyValue = atts.getValue("",
                                     stateOrProperty);
-                            if ("true".equals(stateOrPropertyValue)
+                            if ("hidden".equals(attLocal)
+                                    && "until-found".equals(attLocalValue)
+                                    && "true".equals(stateOrPropertyValue)) {
+                                err("Attribute “aria-hidden” with value"
+                                        + " “true” must not be specified"
+                                        + " on elements with “hidden”"
+                                        + " attribute value “until-found”."
+                                        + " This combination prevents content from"
+                                        + " being accessible to assistive technology"
+                                        + " when revealed through search.");
+                            } else if ("true".equals(stateOrPropertyValue)
                                     || attLocalValue.equals(
                                             stateOrPropertyValue)) {
-                                warn("Attribute \u201C" + stateOrProperty
-                                        + "\u201D is unnecessary for elements"
-                                        + " that have attribute \u201C"
-                                        + attLocal + "\u201D.");
+                                warn("Attribute “" + stateOrProperty
+                                        + "” is unnecessary for elements"
+                                        + " that have attribute “"
+                                        + attLocal + "”.");
                             } else if ("false".equals(stateOrPropertyValue)) {
-                                err("Attribute \u201C" + stateOrProperty
-                                        + "\u201D must not be specified on"
+                                err("Attribute “" + stateOrProperty
+                                        + "” must not be specified on"
                                         + " elements that have attribute"
-                                        + " \u201C" + attLocal + "\u201D.");
+                                        + " “" + attLocal + "”.");
                             } else if (!attLocalValue.equals(
                                             stateOrPropertyValue)) {
-                                err("Attribute \u201C" + stateOrProperty
-                                        + "\u201D must not be specified with"
+                                err("Attribute “" + stateOrProperty
+                                        + "” must not be specified with"
                                         + " a different value than  attribute"
-                                        + " \u201C" + attLocal + "\u201D.");
+                                        + " “" + attLocal + "”.");
                             }
                         }
                     }
@@ -2024,17 +2483,25 @@ public class Assertions extends Checker {
                         for (int j = 0; j < attLocal.length(); j++) {
                             char c = attLocal.charAt(j);
                             if (c >= 'A' && c <= 'Z') {
-                                err("Bad attribute name \u201c" + attLocal
-                                        + "\u201d. Attribute names for the"
-                                        + " \u201cembed\u201d element must not"
+                                err("Bad attribute name “" + attLocal
+                                        + "”. Attribute names for the"
+                                        + " “embed” element must not"
                                         + " contain uppercase ASCII letters.");
                             }
                         }
                         if (!NCName.isNCName(attLocal)) {
-                            err("Bad attribute name \u201c" + attLocal
-                                    + "\u201d. Attribute names for the"
-                                    + " \u201cembed\u201d element must be"
+                            err("Bad attribute name “" + attLocal
+                                    + "”. Attribute names for the"
+                                    + " “embed” element must be"
                                     + " XML-compatible.");
+                        }
+                    }
+                    if ("headingoffset" == attLocal) {
+                        hasHeadingoffset = true;
+                        if (!atts.getValue(i).matches("[0-8]")) {
+                            err("The value of the “headingoffset”"
+                                    + " attribute must be a number between"
+                                    + " “0” and “8”.");
                         }
                     }
                     if ("style" == attLocal) {
@@ -2074,7 +2541,7 @@ public class Assertions extends Checker {
                                 }
                                 if (cpe.getProperty() != null) {
                                     cssProperty = String.format(
-                                            "\u201c%s\u201D: ",
+                                            "“%s”: ",
                                             cpe.getProperty());
                                 }
                                 if (cpe.getMessage() != null) {
@@ -2094,6 +2561,10 @@ public class Assertions extends Checker {
                                 err("CSS: " + message);
                             }
                         }
+                    } else if ("aria-dropeffect" == attLocal || "aria-grabbed" == attLocal) {
+                        warn("The “" + attLocal + "” attribute is"
+                                + " deprecated and should not be used. Support for"
+                                + " it is poor and is unlikely to improve.");
                     } else if ("tabindex" == attLocal) {
                         tabindex = true;
                     } else if ("href" == attLocal) {
@@ -2121,12 +2592,12 @@ public class Assertions extends Checker {
                         }
                     } else if ("role" == attLocal) {
                         role = atts.getValue(i);
+                        roles = Arrays.asList(role.trim()
+                                .toLowerCase().split("\\s+"));
                     } else if ("aria-activedescendant" == attLocal
-                            && !isEmptyAtt) {
+                            && !isEmptyAriaAttribute) {
                         activeDescendant = atts.getValue(i);
-                    } else if ("aria-label" == attLocal && !isEmptyAtt) {
-                        ariaLabel = atts.getValue(i);
-                    } else if ("aria-owns" == attLocal && !isEmptyAtt) {
+                    } else if ("aria-owns" == attLocal && !isEmptyAriaAttribute) {
                         owns = atts.getValue(i);
                     } else if ("list" == attLocal) {
                         list = atts.getValue(i);
@@ -2159,29 +2630,41 @@ public class Assertions extends Checker {
                             && !("1".equals(System.getProperty(
                                     "nu.validator.schema.rdfa-full")))) {
                         errObsoleteAttribute("rev", localName,
-                                " Use the \u201Crel\u201D attribute instead,"
+                                " Use the “rel” attribute instead,"
                                         + " with a term having the opposite meaning.");
-                    } else if (OBSOLETE_ATTRIBUTES.containsKey(attLocal)
-                            && "ol" != localName && "ul" != localName
-                            && "li" != localName) {
-                        String[] elementNames = OBSOLETE_ATTRIBUTES.get(
-                                attLocal);
-                        if (Arrays.binarySearch(elementNames, localName) >= 0) {
-                            String suggestion = OBSOLETE_ATTRIBUTES_MSG.containsKey(
-                                    attLocal)
-                                            ? " " + OBSOLETE_ATTRIBUTES_MSG.get(
-                                                    attLocal)
-                                            : "";
-                            errObsoleteAttribute(attLocal, localName,
-                                    suggestion);
+                    } else if ("autofocus" == attLocal) {
+                        if (hasAutofocus) {
+                            err("There must not be two elements with the same"
+                                    + " \"nearest ancestor autofocus scoping"
+                                    + " root element\" that both have the"
+                                    + " “autofocus” attribute"
+                                    + " specified.");
                         }
+                        hasAutofocus = true;
+                    } else if ("autocomplete".equals(attLocal)) {
+                        if (atts.getValue(i).contains("webauthn")
+                                && !"input".equals(localName)
+                                && !"textarea".equals(localName)) {
+                            err("The value of the “autocomplete”"
+                                    + " attribute for the “" + localName
+                                    + "” element must not contain"
+                                    + " “webauthn”.");
+                                }
+                    }
+                    if (OBSOLETE_ATTRIBUTES.containsKey(attLocal)
+                            && OBSOLETE_ATTRIBUTES.get(attLocal).containsKey(localName)) {
+                        String suggestion = OBSOLETE_ATTRIBUTES.get(attLocal).get(localName);
+                        warnObsoleteAttribute(attLocal, localName, suggestion.isEmpty() ? "" : " " + suggestion);
                     } else if (OBSOLETE_STYLE_ATTRS.containsKey(attLocal)) {
                         String[] elementNames = OBSOLETE_STYLE_ATTRS.get(
                                 attLocal);
                         if (Arrays.binarySearch(elementNames, localName) >= 0) {
-                            errObsoleteAttribute(attLocal, localName,
+                            warnObsoleteAttribute(attLocal, localName,
                                     " Use CSS instead.");
                         }
+                    } else if (OBSOLETE_GLOBAL_ATTRIBUTES.containsKey(attLocal)) {
+                        String suggestion = OBSOLETE_GLOBAL_ATTRIBUTES.get(attLocal);
+                        err("The “" + attLocal + "” attribute is obsolete." + (suggestion.isEmpty() ? "" : " " + suggestion));
                     } else if (INPUT_ATTRIBUTES.containsKey(attLocal)
                             && "input" == localName) {
                         String[] allowedTypes = INPUT_ATTRIBUTES.get(attLocal);
@@ -2189,17 +2672,11 @@ public class Assertions extends Checker {
                                 : inputTypeVal;
                         if (Arrays.binarySearch(allowedTypes,
                                 inputTypeVal) < 0) {
-                            err("Attribute \u201c" + attLocal
-                                    + "\u201d is only allowed when the input"
+                            err("Attribute “" + attLocal
+                                    + "” is only allowed when the input"
                                     + " type is " + renderTypeList(allowedTypes)
                                     + ".");
                         }
-                    } else if ("autofocus" == attLocal) {
-                        if (hasAutofocus) {
-                            err("A document must not include more than one"
-                                    + " \u201Cautofocus\u201D attribute.");
-                        }
-                        hasAutofocus = true;
                     }
                 } else if ("http://www.w3.org/XML/1998/namespace" == attUri) {
                     if ("lang" == atts.getLocalName(i)) {
@@ -2210,7 +2687,10 @@ public class Assertions extends Checker {
                 if (atts.getType(i) == "ID" || "id" == atts.getLocalName(i)) {
                     String attVal = atts.getValue(i);
                     if (attVal.length() != 0) {
-                        ids.add(attVal);
+                        ids.put(attVal, new Element(
+                                    new LocatorImpl(getDocumentLocator()),
+                                    localName,
+                                    new AttributesImpl(atts)));
                     }
                 }
             }
@@ -2219,7 +2699,7 @@ public class Assertions extends Checker {
                 isCustomElement = true;
                 if (atts.getIndex("", "is") > -1) {
                     err("Autonomous custom elements must not specify the"
-                            + " \u201cis\u201d attribute.");
+                            + " “is” attribute.");
                 }
                 try {
                     CustomElementName.THE_INSTANCE.checkValid(localName);
@@ -2239,19 +2719,33 @@ public class Assertions extends Checker {
                     }
                 }
             }
+            if ("base".equals(localName) && atts.getIndex("", "href") > -1
+                    && hasLinkOrScript) {
+                err("The “base” element must come before any"
+                        + " “link” or “script” elements"
+                        + " in the document.");
+            }
+            if ("div".equals(localName) && "dl".equals(parentName)
+                    && role != null
+                    && !role.equals("none")
+                    && !role.equals("presentation")) {
+                err("A “div” child of a “dl” element must"
+                        + " not have any “role” value other than"
+                        + " “presentation” or “none”.");
+            }
             if ("input".equals(localName)) {
                 if (atts.getIndex("", "name") > -1
                         && "isindex".equals(atts.getValue("", "name"))) {
-                    err("The value \u201cisindex\u201d for the \u201cname\u201d"
-                            + " attribute of the \u201cinput\u201d element is"
+                    err("The value “isindex” for the “name”"
+                            + " attribute of the “input” element is"
                             + " not allowed.");
                 }
                 if (atts.getIndex("", "type") > -1
                         && "hidden".equals(atts.getValue("", "type"))
                         && hasAriaAttributesOtherThanAriaHidden) {
-                    err("An \u201cinput\u201d element with a \u201ctype\u201d"
-                            + " attribute whose value is \u201chidden\u201d"
-                            + " must not have any \u201Caria-*\u201D"
+                    err("An “input” element with a “type”"
+                            + " attribute whose value is “hidden”"
+                            + " must not have any “aria-*”"
                             + " attributes.");
                 }
                 inputTypeVal = inputTypeVal == null ? "text" : inputTypeVal;
@@ -2262,13 +2756,13 @@ public class Assertions extends Checker {
                         if ("on".equals(autocompleteVal)
                                 || "off".equals(autocompleteVal)) {
                             if ("hidden".equals(inputTypeVal)) {
-                                err("An \u201cinput\u201d element with a"
-                                        + " \u201ctype\u201d attribute whose"
-                                        + " value is \u201chidden\u201d must"
+                                err("An “input” element with a"
+                                        + " “type” attribute whose"
+                                        + " value is “hidden” must"
                                         + " not have an"
-                                        + " \u201Cautocomplete\u201D attribute"
-                                        + " whose value is \u201Con\u201D or"
-                                        + " \u201Coff\u201D.");
+                                        + " “autocomplete” attribute"
+                                        + " whose value is “on” or"
+                                        + " “off”.");
                             }
                         } else {
                             if ("hidden".equals(inputTypeVal)) {
@@ -2333,6 +2827,10 @@ public class Assertions extends Checker {
                         : "srcset";
                 String sizesName = "link".equals(localName) ? "imagesizes"
                         : "sizes";
+                String sizesVal = atts.getValue("", sizesName);
+                String loadingVal = atts.getValue("", "loading");
+                boolean isLazyLoaded = "lazy".equals(loadingVal);
+                boolean sizesStartsWithAuto = sizesStartsWithAuto(sizesVal);
                 if (atts.getIndex("", srcSetName) > -1) {
                     String srcsetVal = atts.getValue("", srcSetName);
                     try {
@@ -2346,12 +2844,28 @@ public class Assertions extends Checker {
                         // see nu.validator.datatype.ImageCandidateStrings
                         if ("1".equals(System.getProperty(
                                 "nu.validator.checker.imageCandidateString.hasWidth"))) {
-                            if (atts.getIndex("", sizesName) < 0) {
-                                err("When the \u201c" + srcSetName
-                                        + "\u201d attribute has any image"
+                            // Per HTML spec: sizes is required when srcset has
+                            // width descriptors, UNLESS loading=lazy (which
+                            // allows auto-sizes). For source elements in
+                            // picture, check is deferred until img is seen.
+                            if (atts.getIndex("", sizesName) < 0
+                                    && "img".equals(localName)
+                                    && !isLazyLoaded) {
+                                err("When the “" + srcSetName
+                                        + "” attribute has any image"
                                         + " candidate string with a width"
-                                        + " descriptor, the \u201c" + sizesName
-                                        + "\u201d attribute must"
+                                        + " descriptor, the “" + sizesName
+                                        + "” attribute must"
+                                        + " also be specified.");
+                            }
+                            // For link elements, keep the original behavior
+                            if (atts.getIndex("", sizesName) < 0
+                                    && "link".equals(localName)) {
+                                err("When the “" + srcSetName
+                                        + "” attribute has any image"
+                                        + " candidate string with a width"
+                                        + " descriptor, the “" + sizesName
+                                        + "” attribute must"
                                         + " also be specified.");
                             }
                         }
@@ -2388,34 +2902,121 @@ public class Assertions extends Checker {
                             String media = sourceAtts.get("media");
                             if (media == null
                                     && sourceAtts.get("type") == null) {
-                                err("A \u201csource\u201d element that has a"
+                                err("A “source” element that has a"
                                         + " following sibling"
-                                        + " \u201csource\u201d element or"
-                                        + " \u201cimg\u201d element with a"
-                                        + " \u201c" + srcSetName + "\u201d attribute"
+                                        + " “source” element or"
+                                        + " “img” element with a"
+                                        + " “" + srcSetName + "” attribute"
                                         + " must have a"
-                                        + " \u201cmedia\u201d attribute and/or"
-                                        + " \u201ctype\u201d attribute.",
+                                        + " “media” attribute and/or"
+                                        + " “type” attribute.",
                                         locator);
                                 siblingSources.remove(locator);
                             } else if (media != null
                                     && "".equals(trimSpaces(media))) {
-                                err("Value of \u201cmedia\u201d attribute here"
+                                err("Value of “media” attribute here"
                                         + " must not be empty.",
                                         locator);
                             } else if (media != null
                                     && AttributeUtil.lowerCaseLiteralEqualsIgnoreAsciiCaseString(
                                             "all", trimSpaces(media))) {
-                                err("Value of \u201cmedia\u201d attribute here"
-                                        + " must not be \u201call\u201d.",
+                                err("Value of “media” attribute here"
+                                        + " must not be “all”.",
                                         locator);
+                            }
+                            // Check source elements for sizes=auto without
+                            // loading=lazy on the img
+                            String sourceSizes = sourceAtts.get("sizes");
+                            if (sizesStartsWithAuto(sourceSizes)
+                                    && !isLazyLoaded) {
+                                err("The “sizes” attribute value"
+                                        + " starting with “auto” is"
+                                        + " only valid for lazy-loaded images."
+                                        + " The “img” element must"
+                                        + " have a “loading” attribute"
+                                        + " set to “lazy”.",
+                                        locator);
+                            }
+                            // Check source elements for missing sizes when
+                            // srcset has width descriptors and img is not lazy
+                            String sourceSrcset = sourceAtts.get("srcset");
+                            if (sourceSrcset != null && sourceSizes == null
+                                    && !isLazyLoaded) {
+                                // Check if source srcset has width descriptors
+                                try {
+                                    ImageCandidateStrings.THE_INSTANCE.checkValid(
+                                            sourceSrcset);
+                                    if ("1".equals(System.getProperty(
+                                            "nu.validator.checker.imageCandidateString.hasWidth"))) {
+                                        err("When the “srcset”"
+                                                + " attribute has any image"
+                                                + " candidate string with a"
+                                                + " width descriptor, the"
+                                                + " “sizes” attribute"
+                                                + " must also be specified.",
+                                                locator);
+                                    }
+                                } catch (DatatypeException e) {
+                                    // srcset validation errors handled elsewhere
+                                }
                             }
                         }
                     }
                 } else if (atts.getIndex("", sizesName) > -1) {
-                    err("The \u201c" + sizesName + "\u201d attribute must only"
-                            + " be specified if the \u201c" + srcSetName
-                            + "\u201d attribute is also specified.");
+                    err("The “" + sizesName + "” attribute must only"
+                            + " be specified if the “" + srcSetName
+                            + "” attribute is also specified.");
+                }
+                // Validate sizes=auto requires loading=lazy for img element
+                if ("img".equals(localName) && sizesStartsWithAuto
+                        && !isLazyLoaded) {
+                    err("The “sizes” attribute value starting with"
+                            + " “auto” is only valid for lazy-loaded"
+                            + " images. Add “loading=”“lazy”"
+                            + " to this element.");
+                }
+            }
+
+            // Check source elements in picture when img is encountered
+            // This handles cases where img doesn't have srcset but sources do
+            if ("img".equals(localName) && "picture".equals(parentName)
+                    && !siblingSources.isEmpty()) {
+                String loadingVal = atts.getValue("", "loading");
+                boolean isLazy = "lazy".equals(loadingVal);
+                for (Map.Entry<Locator, Map<String, String>> entry : siblingSources.entrySet()) {
+                    Locator locator = entry.getKey();
+                    Map<String, String> sourceAtts = entry.getValue();
+                    String sourceSizes = sourceAtts.get("sizes");
+                    String sourceSrcset = sourceAtts.get("srcset");
+                    // Check source for sizes=auto without loading=lazy on img
+                    if (sizesStartsWithAuto(sourceSizes) && !isLazy) {
+                        err("The “sizes” attribute value"
+                                + " starting with “auto” is"
+                                + " only valid for lazy-loaded images."
+                                + " The “img” element must"
+                                + " have a “loading” attribute"
+                                + " set to “lazy”.",
+                                locator);
+                    }
+                    // Check source for missing sizes when srcset has width
+                    // descriptors and img is not lazy-loaded
+                    if (sourceSrcset != null && sourceSizes == null && !isLazy) {
+                        try {
+                            ImageCandidateStrings.THE_INSTANCE.checkValid(
+                                    sourceSrcset);
+                            if ("1".equals(System.getProperty(
+                                    "nu.validator.checker.imageCandidateString.hasWidth"))) {
+                                err("When the “srcset” attribute"
+                                        + " has any image candidate string"
+                                        + " with a width descriptor, the"
+                                        + " “sizes” attribute must"
+                                        + " also be specified.",
+                                        locator);
+                            }
+                        } catch (DatatypeException e) {
+                            // srcset validation errors handled elsewhere
+                        }
+                    }
                 }
             }
 
@@ -2431,8 +3032,11 @@ public class Assertions extends Checker {
             if ("figure" == localName) {
                 currentFigurePtr = currentPtr + 1;
             }
+            if ("ruby" == localName) {
+                currentRubyPtr = currentPtr + 1;
+            }
             if ("caption" == localName && "table" == parentName
-                    && stack.length >= currentPtr - 1
+                    && currentPtr > 1
                     && "figure" == stack[currentPtr - 1].getName()) {
                 stack[currentPtr - 1].setCaptionNestedInFigure(
                         new LocatorImpl(getDocumentLocator()));
@@ -2476,8 +3080,8 @@ public class Assertions extends Checker {
             if ("option" == localName && !parent.hasOption()) {
                 if (atts.getIndex("", "aria-selected") > -1
                         && !"".equals(atts.getValue("", "aria-selected"))) {
-                    warn("The \u201Caria-selected\u201D attribute should not be"
-                            + " used on the \u201Coption\u201D element.");
+                    warn("The “aria-selected” attribute should not be"
+                            + " used on the “option” element.");
                 }
                 if (atts.getIndex("", "value") < 0) {
                     parent.setNoValueOptionFound();
@@ -2496,42 +3100,60 @@ public class Assertions extends Checker {
                 if (!"".equals(OBSOLETE_ELEMENTS.get(localName))) {
                     suggestion = " " + OBSOLETE_ELEMENTS.get(localName);
                 }
-                err("The \u201C" + localName + "\u201D element is obsolete."
+                err("The “" + localName + "” element is obsolete."
                         + suggestion);
+            }
+
+            if ("rb".equals(localName) && currentRubyPtr > 0
+                    && currentRubyPtr < stack.length) {
+                StackNode rubyNode = stack[currentRubyPtr];
+                rubyNode.incrementConsecutiveRbCount();
+                if (rubyNode.getConsecutiveRbCount() > 1) {
+                    rubyNode.setTabularRubyMarkup();
+                }
+            }
+            if ("rt".equals(localName) && currentRubyPtr > 0
+                    && currentRubyPtr < stack.length) {
+                stack[currentRubyPtr].resetConsecutiveRbCount();
             }
 
             // Exclusions
             Integer maskAsObject;
             int mask = 0;
-            String descendantUiString = "The element \u201C" + localName
-                    + "\u201D";
-            if ((maskAsObject = ANCESTOR_MASK_BY_DESCENDANT.get(
+            String descendantUiString = "The element “" + localName
+                    + "”";
+            if ("a" == localName && href) {
+                mask = A_BUTTON_MASK;
+                descendantUiString = "The element “a” with the"
+                        + " attribute “href”";
+                checkForInteractiveAncestorRole(descendantUiString);
+            } else if ((maskAsObject = ANCESTOR_MASK_BY_DESCENDANT.get(
                     localName)) != null) {
                 mask = maskAsObject.intValue();
             } else if ("video" == localName && controls) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "The element \u201Cvideo\u201D with the"
-                        + " attribute \u201Ccontrols\u201D";
+                descendantUiString = "The element “video” with the"
+                        + " attribute “controls”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if ("audio" == localName && controls) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "The element \u201Caudio\u201D with the"
-                        + " attribute \u201Ccontrols\u201D";
+                descendantUiString = "The element “audio” with the"
+                        + " attribute “controls”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if ("menu" == localName && toolbar) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "The element \u201Cmenu\u201D with the"
-                        + " attribute \u201Ctype=toolbar\u201D";
+                descendantUiString = "The element “menu” with the"
+                        + " attribute “type=toolbar”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if ("img" == localName && usemap) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "The element \u201Cimg\u201D with the"
-                        + " attribute \u201Cusemap\u201D";
+                descendantUiString = "The element “img” with the"
+                        + " attribute “usemap”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if ("object" == localName && usemap) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "The element \u201Cobject\u201D with the"
-                        + " attribute \u201Cusemap\u201D";
+                descendantUiString = "The element “object” with the"
+                        + " attribute “usemap”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if ("input" == localName && !hidden) {
                 mask = A_BUTTON_MASK;
@@ -2539,13 +3161,13 @@ public class Assertions extends Checker {
             } else if (tabindex) {
                 mask = A_BUTTON_MASK;
                 descendantUiString = "An element with the attribute"
-                        + " \u201Ctabindex\u201D";
+                        + " “tabindex”";
                 checkForInteractiveAncestorRole(descendantUiString);
             } else if (role != null && role != ""
                     && Arrays.binarySearch(INTERACTIVE_ROLES, role) >= 0) {
                 mask = A_BUTTON_MASK;
-                descendantUiString = "An element with the attribute \u201C"
-                        + "role=" + role + "\u201D";
+                descendantUiString = "An element with the attribute “"
+                        + "role=" + role + "”";
                 checkForInteractiveAncestorRole(descendantUiString);
             }
             if (mask != 0) {
@@ -2554,8 +3176,8 @@ public class Assertions extends Checker {
                     for (String ancestor : SPECIAL_ANCESTORS) {
                         if ((maskHit & 1) != 0) {
                             err(descendantUiString + " must not appear as a"
-                                    + " descendant of the \u201C" + ancestor
-                                    + "\u201D element.");
+                                    + " descendant of the “" + ancestor
+                                    + "” element.");
                         }
                         maskHit >>= 1;
                     }
@@ -2563,41 +3185,137 @@ public class Assertions extends Checker {
             }
             if (Arrays.binarySearch(INTERACTIVE_ELEMENTS, localName) >= 0) {
                 checkForInteractiveAncestorRole(
-                        "The element \u201C" + localName + "\u201D");
+                        "The element “" + localName + "”");
+            }
+
+            if (roles !=null && roles.contains("tabpanel")) {
+                tabpanelElements.put(id, new Element(
+                            new LocatorImpl(getDocumentLocator()),
+                            localName,
+                            new AttributesImpl(atts)));
+            }
+
+            if (roles != null && roles.contains("tab")
+                    && "true".equals(atts.getValue("", "aria-selected"))) {
+                tabElementsActive.put(id, new Element(
+                            new LocatorImpl(getDocumentLocator()),
+                            localName,
+                            new AttributesImpl(atts)));
+            }
+
+            if (role != null && !role.isEmpty()) {
+                for (Map.Entry<String, String[]> attributeAndRoles : ARIA_DEPRECATED_ATTRIBUTES_BY_ROLE.entrySet()) {
+                    if (atts.getIndex("", attributeAndRoles.getKey()) >= 0
+                            && Arrays.binarySearch(attributeAndRoles.getValue(),
+                                    role) >= 0) {
+                        warn("The “" + attributeAndRoles.getKey()
+                                + "” attribute should not be used on any"
+                                + " element which has “role=" + role + "”.");
+                    }
+                }
+                // Check for multiple main roles in document
+                if (roles.contains("main") && atts.getIndex("", "hidden") < 0) {
+                    if (hasVisibleMainRole) {
+                        warn("A document should not include more than one visible"
+                                + " element with “role=main”.");
+                    }
+                    hasVisibleMainRole = true;
+                }
+            }
+
+            if ("li" == localName && roles != null && roles.size() > 0) {
+                List<String> ancestorRoles = new ArrayList<>();
+                for (int i = 0; i < currentPtr; i++) {
+                    if (stack[currentPtr - i] != null
+                            && stack[currentPtr - i].roles != null) {
+                        ancestorRoles.addAll(stack[currentPtr - i].roles);
+                    }
+                }
+                if (ancestorRoles.size() == 0
+                        || ancestorRoles.contains("list")) {
+                    err("An “li” element that is a descendant of"
+                            + " a “ul”, “ol”,"
+                            + " or “menu” element with no explicit"
+                            + " “role” value, or a descendant of a"
+                            + " “role=list” element, must not have any"
+                            + " “role” value other than"
+                            + " “listitem”.");
+                }
+                if (!roles.contains("none")
+                        && !roles.contains("presentation")
+                        && !roles.contains("generic")) {
+                    if (ancestorRoles.contains("tablist")
+                            && !roles.contains("tab")) {
+                        err("An “li” element that is a descendant of"
+                                + " a “role=tablist” element must not"
+                                + " have any “role” value other than"
+                                + " “tab”.");
+                            }
+                    if (ancestorRoles.contains("tree")
+                            && !roles.contains("treeitem")) {
+                        err("An “li” element that is a descendant of"
+                                + " a “role=tree” element must not"
+                                + " have any “role” value other than"
+                                + " “treeitem”.");
+                            }
+                    if ((ancestorRoles.contains("listbox")
+                                || ancestorRoles.contains("list"))
+                            && !roles.contains("group")
+                            && !roles.contains("option")) {
+                        err("An “li” element that is a descendant of"
+                                + " a “role=listbox” element"
+                                + " or “role=list” element must not"
+                                + " have any “role” value other than"
+                                + " “group” or “option”.");
+                            }
+                    if ((ancestorRoles.contains("menu") ||
+                                ancestorRoles.contains("menubar"))
+                            && !roles.contains("group")
+                            && !roles.contains("menuitem")
+                            && !roles.contains("menuitemcheckbox")
+                            && !roles.contains("menuitemradio")
+                            && !roles.contains("separator")) {
+                        err("An “li” element that is a descendant of"
+                                + " a “role=menu” element"
+                                + " or “role=menubar” element must not"
+                                + " have any “role” value other than"
+                                + " “group”,"
+                                + " “menuitem”,"
+                                + " “menuitemcheckbox”,"
+                                + " “menuitemradio”,"
+                                + " or “separator”.");
+                    }
+                }
             }
 
             // Ancestor requirements/restrictions
             if ("area" == localName && ((ancestorMask & MAP_MASK) == 0)) {
-                err("The \u201Carea\u201D element must have a \u201Cmap\u201D ancestor.");
+                err("The “area” element must have a “map” ancestor.");
             } else if ("img" == localName) {
-                List<String> roles = null;
-                if (role != null) {
-                    roles = Arrays.asList(role.trim() //
-                            .toLowerCase().split("\\s+"));
-                }
                 String titleVal = atts.getValue("", "title");
                 if (ismap && ((ancestorMask & HREF_MASK) == 0)) {
-                    err("The \u201Cimg\u201D element with the "
-                            + "\u201Cismap\u201D attribute set must have an "
-                            + "\u201Ca\u201D ancestor with the "
-                            + "\u201Chref\u201D attribute.");
+                    err("The “img” element with the "
+                            + "“ismap” attribute set must have an "
+                            + "“a” ancestor with the "
+                            + "“href” attribute.");
                 }
-                if (atts.getIndex("", "alt") < 0) {
+                if (atts.getIndex("", "alt") < 0
+                        && atts.getIndex("", "aria-label") < 0
+                        && atts.getIndex("", "aria-labelledby") < 0) {
                     if (role != null) {
-                        err("An \u201Cimg\u201D element with no \u201Calt\u201D"
-                                + " attribute must not have a"
-                                + " \u201Crole\u201D attribute.");
-                    }
-                    if (hasAriaAttributesOtherThanAriaHidden) {
-                        err("An \u201Cimg\u201D element with no \u201Calt\u201D"
-                                + " attribute must not have any"
-                                + " \u201Caria-*\u201D attributes other than"
-                                + " \u201Caria-hidden\u201D.");
-                    }
-                    if ((titleVal == null || "".equals(titleVal))) {
+                        err("An “img” element with a “role”"
+                                + " attribute must also have an accessible"
+                                + " name (e.g., an “alt” attribute).");
+                    } else if (hasAriaAttributesOtherThanAriaHidden) {
+                        err("An “img” element with any"
+                                + " “aria-*” attributes"
+                                + " other than “aria-hidden”"
+                                + " must also have an accessible name."
+                                + " (e.g., an “alt” attribute).");
+                    } else if ((titleVal == null || "".equals(titleVal))) {
                         if ((ancestorMask & FIGURE_MASK) == 0) {
-                            err("An \u201Cimg\u201D element must have an"
-                                    + " \u201Calt\u201D attribute, except under"
+                            err("An “img” element must have an"
+                                    + " “alt” attribute, except under"
                                     + " certain conditions. For details, consult"
                                     + " guidance on providing text alternatives"
                                     + " for images.");
@@ -2610,18 +3328,17 @@ public class Assertions extends Checker {
                 } else if (role != null) {
                     if ("".equals(atts.getValue("", "alt"))) {
                         // img with alt="" and role
-                        err("An \u201Cimg\u201D element which has an"
-                                + " \u201Calt\u201D attribute whose value is"
-                                + " the empty string must not have a"
-                                + " \u201Crole\u201D attribute.");
+                        err("An “img” element with a “role”"
+                                + " attribute must not have an “alt”"
+                                + " attribute whose value is the empty string.");
                     } else {
                         // img with alt="some text" and role
                         for (String roleValue : roles) {
                             if ("none".equals(roleValue)
                                     || "presentation".equals(roleValue)) {
-                                err("Bad value \u201C" + roleValue + "\u201D"
-                                        + " for attribute \u201Crole\u201D on"
-                                        + " element \u201Cimg\u201D");
+                                err("Bad value “" + roleValue + "”"
+                                        + " for attribute “role” on"
+                                        + " element “img”");
                             }
                         }
                     }
@@ -2631,45 +3348,33 @@ public class Assertions extends Checker {
                         || "table".equals(role) || "grid".equals(role)
                         || "treegrid".equals(role)) {
                     hasAncestorTableIsRoleTableGridOrTreeGrid = true;
-                }
-                if (atts.getIndex("", "summary") >= 0) {
-                    errObsoleteAttribute("summary", "table",
-                            " Consider describing the structure of the"
-                                    + " \u201Ctable\u201D in a \u201Ccaption\u201D "
-                                    + " element or in a \u201Cfigure\u201D element "
-                                    + " containing the \u201Ctable\u201D; or,"
-                                    + " simplify the structure of the"
-                                    + " \u201Ctable\u201D so that no description"
-                                    + " is needed.");
-                }
-                if (atts.getIndex("", "border") > -1) {
-                    errObsoleteAttribute("border", "table",
-                            " Use CSS instead.");
+                } else if ("presentation".equals(role)) {
+                    hasAncestorTableIsRoleTableGridOrTreeGrid = false;
                 }
             } else if (hasAncestorTableIsRoleTableGridOrTreeGrid
                     && atts.getIndex("", "role") >= 0 && ("td" == localName
                             || "tr" == localName || "th" == localName)) {
-                err("The \u201Crole\u201D attribute must not be used"
-                        + " on a \u201C" + localName + "\u201D element"
-                        + " which has a \u201Ctable\u201D ancestor with"
-                        + " no \u201Crole\u201D attribute, or with a"
-                        + " \u201Crole\u201D attribute whose value is"
-                        + " \u201Ctable\u201D, \u201Cgrid\u201D,"
-                        + " or \u201Ctreegrid\u201D.");
+                err("The “role” attribute must not be used"
+                        + " on a “" + localName + "” element"
+                        + " which has a “table” ancestor with"
+                        + " no “role” attribute, or with a"
+                        + " “role” attribute whose value is"
+                        + " “table”, “grid”,"
+                        + " or “treegrid”.");
             } else if ("track" == localName
                     && atts.getIndex("", "default") >= 0) {
                 for (Map.Entry<StackNode, TaintableLocatorImpl> entry : openMediaElements.entrySet()) {
                     StackNode node = entry.getKey();
                     TaintableLocatorImpl locator = entry.getValue();
                     if (node.isTrackDescendant()) {
-                        err("The \u201Cdefault\u201D attribute must not occur"
-                                + " on more than one \u201Ctrack\u201D element"
-                                + " within the same \u201Caudio\u201D or"
-                                + " \u201Cvideo\u201D element.");
+                        err("The “default” attribute must not occur"
+                                + " on more than one “track” element"
+                                + " within the same “audio” or"
+                                + " “video” element.");
                         if (!locator.isTainted()) {
-                            warn("\u201Caudio\u201D or \u201Cvideo\u201D element"
-                                    + " has more than one \u201Ctrack\u201D child"
-                                    + " element with a \u201Cdefault\u201D attribute.",
+                            warn("“audio” or “video” element"
+                                    + " has more than one “track” child"
+                                    + " element with a “default” attribute.",
                                     locator);
                             locator.markTainted();
                         }
@@ -2685,19 +3390,20 @@ public class Assertions extends Checker {
                     if (ancestorName != null
                             && Arrays.binarySearch(PROHIBITED_MAIN_ANCESTORS,
                                     ancestorName) >= 0) {
-                        err("The \u201Cmain\u201D element must not appear as a"
-                                + " descendant of the \u201C" + ancestorName
-                                + "\u201D element.");
+                        err("The “main” element must not appear as a"
+                                + " descendant of the “" + ancestorName
+                                + "” element.");
                     }
                 }
                 if (atts.getIndex("", "hidden") < 0) {
                     if (hasVisibleMain) {
                         err("A document must not include more than one visible"
-                                + " \u201Cmain\u201D element.");
+                                + " “main” element.");
                     }
                     hasVisibleMain = true;
+                    hasVisibleMainRole = true; // <main> has implicit role="main"
                 }
-            } else if ("h1" == localName) {
+            } else if ("h1" == localName && !hasHeadingoffset) {
                 if (sectioningElementPtrs.size() > 1) {
                     warn(h1WarningMessage);
                 } else if (sectioningElementPtrs.size() == 1) {
@@ -2714,23 +3420,23 @@ public class Assertions extends Checker {
                     double max = getDoubleAttribute(atts, "max");
                     if (Double.isNaN(max)) {
                         if (!(value <= 1.0)) {
-                            err("The value of the  \u201Cvalue\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                            err("The value of the  “value” attribute must be less than or equal to one when the “max” attribute is absent.");
                         }
                     } else {
                         if (!(value <= max)) {
-                            err("The value of the  \u201Cvalue\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                            err("The value of the  “value” attribute must be less than or equal to the value of the “max” attribute.");
                         }
                     }
                 }
                 if (atts.getIndex("", "aria-valuemax") >= 0
                         && !"".equals(atts.getValue("", "aria-valuemax"))) {
                     if (atts.getIndex("", "max") >= 0) {
-                        err("The \u201Caria-valuemax\u201D attribute must not"
+                        err("The “aria-valuemax” attribute must not"
                                 + " be used on an element which has a"
-                                + " \u201Cmax\u201D attribute.");
+                                + " “max” attribute.");
                     } else {
-                        warn("The \u201Caria-valuemax\u201D attribute should"
-                                + " not be used on a \u201Cprogress\u201D"
+                        warn("The “aria-valuemax” attribute should"
+                                + " not be used on a “progress”"
                                 + " element.");
                     }
                 }
@@ -2746,96 +3452,96 @@ public class Assertions extends Checker {
                 double high = getDoubleAttribute(atts, "high");
                 if (!Double.isNaN(min) && !Double.isNaN(value)
                         && !(min <= value)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to the value of the \u201Cvalue\u201D attribute.");
+                    err("The value of the “min” attribute must be less than or equal to the value of the “value” attribute.");
                 }
                 if (Double.isNaN(min) && !Double.isNaN(value)
                         && !(0 <= value)) {
-                    err("The value of the \u201Cvalue\u201D attribute must be greater than or equal to zero when the \u201Cmin\u201D attribute is absent.");
+                    err("The value of the “value” attribute must be greater than or equal to zero when the “min” attribute is absent.");
                 }
                 if (!Double.isNaN(value) && !Double.isNaN(max)
                         && !(value <= max)) {
-                    err("The value of the \u201Cvalue\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                    err("The value of the “value” attribute must be less than or equal to the value of the “max” attribute.");
                 }
                 if (!Double.isNaN(value) && Double.isNaN(max)
                         && !(value <= 1)) {
-                    err("The value of the \u201Cvalue\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                    err("The value of the “value” attribute must be less than or equal to one when the “max” attribute is absent.");
                 }
                 if (!Double.isNaN(min) && !Double.isNaN(max) && !(min <= max)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                    err("The value of the “min” attribute must be less than or equal to the value of the “max” attribute.");
                 }
                 if (Double.isNaN(min) && !Double.isNaN(max) && !(0 <= max)) {
-                    err("The value of the \u201Cmax\u201D attribute must be greater than or equal to zero when the \u201Cmin\u201D attribute is absent.");
+                    err("The value of the “max” attribute must be greater than or equal to zero when the “min” attribute is absent.");
                 }
                 if (!Double.isNaN(min) && Double.isNaN(max) && !(min <= 1)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                    err("The value of the “min” attribute must be less than or equal to one when the “max” attribute is absent.");
                 }
                 if (!Double.isNaN(min) && !Double.isNaN(low) && !(min <= low)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to the value of the \u201Clow\u201D attribute.");
+                    err("The value of the “min” attribute must be less than or equal to the value of the “low” attribute.");
                 }
                 if (Double.isNaN(min) && !Double.isNaN(low) && !(0 <= low)) {
-                    err("The value of the \u201Clow\u201D attribute must be greater than or equal to zero when the \u201Cmin\u201D attribute is absent.");
+                    err("The value of the “low” attribute must be greater than or equal to zero when the “min” attribute is absent.");
                 }
                 if (!Double.isNaN(min) && !Double.isNaN(high)
                         && !(min <= high)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to the value of the \u201Chigh\u201D attribute.");
+                    err("The value of the “min” attribute must be less than or equal to the value of the “high” attribute.");
                 }
                 if (Double.isNaN(min) && !Double.isNaN(high) && !(0 <= high)) {
-                    err("The value of the \u201Chigh\u201D attribute must be greater than or equal to zero when the \u201Cmin\u201D attribute is absent.");
+                    err("The value of the “high” attribute must be greater than or equal to zero when the “min” attribute is absent.");
                 }
                 if (!Double.isNaN(low) && !Double.isNaN(high)
                         && !(low <= high)) {
-                    err("The value of the \u201Clow\u201D attribute must be less than or equal to the value of the \u201Chigh\u201D attribute.");
+                    err("The value of the “low” attribute must be less than or equal to the value of the “high” attribute.");
                 }
                 if (!Double.isNaN(high) && !Double.isNaN(max)
                         && !(high <= max)) {
-                    err("The value of the \u201Chigh\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                    err("The value of the “high” attribute must be less than or equal to the value of the “max” attribute.");
                 }
                 if (!Double.isNaN(high) && Double.isNaN(max) && !(high <= 1)) {
-                    err("The value of the \u201Chigh\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                    err("The value of the “high” attribute must be less than or equal to one when the “max” attribute is absent.");
                 }
                 if (!Double.isNaN(low) && !Double.isNaN(max) && !(low <= max)) {
-                    err("The value of the \u201Clow\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                    err("The value of the “low” attribute must be less than or equal to the value of the “max” attribute.");
                 }
                 if (!Double.isNaN(low) && Double.isNaN(max) && !(low <= 1)) {
-                    err("The value of the \u201Clow\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                    err("The value of the “low” attribute must be less than or equal to one when the “max” attribute is absent.");
                 }
                 if (!Double.isNaN(min) && !Double.isNaN(optimum)
                         && !(min <= optimum)) {
-                    err("The value of the \u201Cmin\u201D attribute must be less than or equal to the value of the \u201Coptimum\u201D attribute.");
+                    err("The value of the “min” attribute must be less than or equal to the value of the “optimum” attribute.");
                 }
                 if (Double.isNaN(min) && !Double.isNaN(optimum)
                         && !(0 <= optimum)) {
-                    err("The value of the \u201Coptimum\u201D attribute must be greater than or equal to zero when the \u201Cmin\u201D attribute is absent.");
+                    err("The value of the “optimum” attribute must be greater than or equal to zero when the “min” attribute is absent.");
                 }
                 if (!Double.isNaN(optimum) && !Double.isNaN(max)
                         && !(optimum <= max)) {
-                    err("The value of the \u201Coptimum\u201D attribute must be less than or equal to the value of the \u201Cmax\u201D attribute.");
+                    err("The value of the “optimum” attribute must be less than or equal to the value of the “max” attribute.");
                 }
                 if (!Double.isNaN(optimum) && Double.isNaN(max)
                         && !(optimum <= 1)) {
-                    err("The value of the \u201Coptimum\u201D attribute must be less than or equal to one when the \u201Cmax\u201D attribute is absent.");
+                    err("The value of the “optimum” attribute must be less than or equal to one when the “max” attribute is absent.");
                 }
                 if (atts.getIndex("", "aria-valuemin") >= 0
                         && !"".equals(atts.getValue("", "aria-valuemin"))) {
                     if (atts.getIndex("", "min") >= 0) {
-                        err("The \u201Caria-valuemin\u201D attribute must not"
+                        err("The “aria-valuemin” attribute must not"
                                 + " be used on an element which has a"
-                                + " \u201Cmin\u201D attribute.");
+                                + " “min” attribute.");
                     } else {
-                        warn("The \u201Caria-valuemin\u201D attribute should"
-                                + " not be used on a \u201Cmeter\u201D"
+                        warn("The “aria-valuemin” attribute should"
+                                + " not be used on a “meter”"
                                 + " element.");
                     }
                 }
                 if (atts.getIndex("", "aria-valuemax") >= 0
                         && !"".equals(atts.getValue("", "aria-valuemax"))) {
                     if (atts.getIndex("", "max") >= 0) {
-                        err("The \u201Caria-valuemax\u201D attribute must not"
+                        err("The “aria-valuemax” attribute must not"
                                 + " be used on an element which has a"
-                                + " \u201Cmax\u201D attribute.");
+                                + " “max” attribute.");
                     } else {
-                        warn("The \u201Caria-valuemax\u201D attribute should"
-                                + " not be used on a \u201Cmeter\u201D"
+                        warn("The “aria-valuemax” attribute should"
+                                + " not be used on a “meter”"
                                 + " element.");
                     }
                 }
@@ -2845,21 +3551,7 @@ public class Assertions extends Checker {
             else if ("map" == localName && id != null) {
                 String nameVal = atts.getValue("", "name");
                 if (nameVal != null && !nameVal.equals(id)) {
-                    err("The \u201Cid\u201D attribute on a \u201Cmap\u201D element must have an the same value as the \u201Cname\u201D attribute.");
-                }
-            }
-
-            else if ("object" == localName) {
-                if (atts.getIndex("", "typemustmatch") >= 0) {
-                    if ((atts.getIndex("", "data") < 0)
-                            || (atts.getIndex("", "type") < 0)) {
-                        {
-                            err("Element \u201Cobject\u201D must not have"
-                                    + " attribute \u201Ctypemustmatch\u201D unless"
-                                    + " both attribute \u201Cdata\u201D"
-                                    + " and attribute \u201Ctype\u201D are also specified.");
-                        }
-                    }
+                    err("The “id” attribute on a “map” element must have an the same value as the “name” attribute.");
                 }
             }
             else if ("form" == localName) {
@@ -2867,127 +3559,363 @@ public class Assertions extends Checker {
                     if (!"utf-8".equals(
                             atts.getValue("", "accept-charset").toLowerCase())) {
                         err("The only allowed value for the"
-                                + " \u201Caccept-charset\u201D attribute for"
-                                + " the \u201Cform\u201D element is"
-                                + " \u201Cutf-8\u201D.");
+                                + " “accept-charset” attribute for"
+                                + " the “form” element is"
+                                + " “utf-8”.");
                     }
                 }
             }
             // script
             else if ("script" == localName) {
+                hasLinkOrScript = true;
                 // script language
                 if (languageJavaScript && typeNotTextJavaScript) {
-                    err("A \u201Cscript\u201D element with the \u201Clanguage=\"JavaScript\"\u201D attribute set must not have a \u201Ctype\u201D attribute whose value is not \u201Ctext/javascript\u201D.");
+                    err("A “script” element with the “language=\"JavaScript\"” attribute set must not have a “type” attribute whose value is not “text/javascript”.");
                 }
                 if (atts.getIndex("", "charset") >= 0) {
                     warnObsoleteAttribute("charset", "script", "");
                     if (!"utf-8".equals(
                             atts.getValue("", "charset").toLowerCase())) {
-                        err("The only allowed value for the \u201Ccharset\u201D"
-                                + " attribute for the \u201Cscript\u201D"
-                                + " element is \u201Cutf-8\u201D. (But the"
+                        err("The only allowed value for the “charset”"
+                                + " attribute for the “script”"
+                                + " element is “utf-8”. (But the"
                                 + " attribute is not needed and should be"
                                 + " omitted altogether.)");
                     }
                 }
-                // src-less script
-                if (atts.getIndex("", "src") < 0) {
-                    if (atts.getIndex("", "charset") >= 0) {
-                        err("Element \u201Cscript\u201D must not have attribute \u201Ccharset\u201D unless attribute \u201Csrc\u201D is also specified.");
-                    }
-                    if (atts.getIndex("", "defer") >= 0) {
-                        err("Element \u201Cscript\u201D must not have attribute \u201Cdefer\u201D unless attribute \u201Csrc\u201D is also specified.");
+
+                // Determine script type
+                String scriptType = "";
+                if (atts.getIndex("", "type") > -1) {
+                    scriptType = atts.getValue("", "type").toLowerCase();
+                }
+                boolean hasSrc = atts.getIndex("", "src") >= 0;
+                boolean isClassicScript = scriptType.isEmpty() || 
+                        JAVASCRIPT_MIME_TYPES.contains(scriptType);
+                boolean isModuleScript = "module".equals(scriptType);
+                boolean isImportMap = "importmap".equals(scriptType);
+                boolean isSpeculationRules = "speculationrules".equals(scriptType);
+                boolean isDataBlock = !scriptType.isEmpty() && 
+                        !isClassicScript && !isModuleScript && !isImportMap &&
+                        !isSpeculationRules;
+
+                // Validate attributes based on script type
+                if (isImportMap) {
+                    // Import maps: only inline, no other script-specific attributes
+                    if (hasSrc) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value"
+                                + " is “importmap” must not have"
+                                + " a “src” attribute.");
                     }
                     if (atts.getIndex("", "async") >= 0) {
-                        if (!(atts.getIndex("", "type") > -1 && //
-                                "module".equals(atts.getValue("", "type") //
-                                        .toLowerCase()))) {
-                            err("Element \u201Cscript\u201D must not have"
-                                    + " attribute \u201Casync\u201D unless"
-                                    + " attribute \u201Csrc\u201D is also"
-                                    + " specified or unless attribute"
-                                    + " \u201Ctype\u201D is specified with"
-                                    + " value \u201Cmodule\u201D.");
-                        }
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " an “async” attribute.");
+                    }
+                    if (atts.getIndex("", "nomodule") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “nomodule” attribute.");
+                    }
+                    if (atts.getIndex("", "defer") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “defer” attribute.");
+                    }
+                    if (atts.getIndex("", "crossorigin") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “crossorigin” attribute.");
                     }
                     if (atts.getIndex("", "integrity") >= 0) {
-                        err("Element \u201Cscript\u201D must not have attribute"
-                                + " \u201Cintegrity\u201D unless attribute"
-                                + " \u201Csrc\u201D is also specified.");
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " an “integrity” attribute.");
                     }
-                    if (atts.getIndex("", "fetchpriority") > -1) {
-                        warn("Element \u201Cscript\u201D should not have attribute"
-                                     + " \u201Cfetchpriority\u201D unless attribute"
-                                     + " \u201Csrc\u201D is also specified.");
+                    if (atts.getIndex("", "referrerpolicy") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “referrerpolicy” attribute.");
+                    }
+                    if (atts.getIndex("", "fetchpriority") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “fetchpriority” attribute.");
+                    }
+                    if (atts.getIndex("", "blocking") >= 0) {
+                        err("A “script” element with"
+                                + " “type=importmap” must not have"
+                                + " a “blocking” attribute.");
+                    }
+                    parsingScriptImportMap = true;
+                } else if (isSpeculationRules) {
+                    // Speculation rules: only inline, no other script-specific attributes
+                    if (atts.getIndex("", "nomodule") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “nomodule” attribute.");
+                    }
+                    if (atts.getIndex("", "async") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " an “async” attribute.");
+                    }
+                    if (atts.getIndex("", "defer") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “defer” attribute.");
+                    }
+                    if (atts.getIndex("", "blocking") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “blocking” attribute.");
+                    }
+                    if (atts.getIndex("", "crossorigin") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “crossorigin” attribute.");
+                    }
+                    if (atts.getIndex("", "referrerpolicy") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “referrerpolicy” attribute.");
+                    }
+                    if (atts.getIndex("", "integrity") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " an “integrity” attribute.");
+                    }
+                    if (atts.getIndex("", "fetchpriority") >= 0) {
+                        err("A “script” element with"
+                                + " “type=speculationrules” must not have"
+                                + " a “fetchpriority” attribute.");
+                    }
+                } else if (isDataBlock) {
+                    // Data blocks: no script-specific attributes
+                    if (hasSrc) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “src” attribute.");
+                    }
+                    if (atts.getIndex("", "async") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " an “async” attribute.");
+                    }
+                    if (atts.getIndex("", "nomodule") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “nomodule” attribute.");
+                    }
+                    if (atts.getIndex("", "defer") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “defer” attribute.");
+                    }
+                    if (atts.getIndex("", "crossorigin") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “crossorigin” attribute.");
+                    }
+                    if (atts.getIndex("", "integrity") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " an “integrity” attribute.");
+                    }
+                    if (atts.getIndex("", "referrerpolicy") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “referrerpolicy” attribute.");
+                    }
+                    if (atts.getIndex("", "fetchpriority") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “fetchpriority” attribute.");
+                    }
+                    if (atts.getIndex("", "blocking") >= 0) {
+                        err("A “script” element with a"
+                                + " “type” attribute whose value is"
+                                + " neither a JavaScript MIME type, “module”,"
+                                + " “importmap”, nor “speculationrules”"
+                                + " (i.e., a data block) must not have"
+                                + " a “blocking” attribute.");
+                    }
+                } else if (isModuleScript) {
+                    // Module scripts
+                    if (atts.getIndex("", "nomodule") >= 0) {
+                        err("A “script” element with a"
+                                + " “nomodule” attribute must not have a"
+                                + " “type” attribute with the value"
+                                + " “module”.");
+                    }
+                    if (atts.getIndex("", "defer") >= 0) {
+                        err("A “script” element with"
+                                + " “type=module” must not have"
+                                + " a “defer” attribute.");
+                    }
+                    if (!hasSrc) {
+                        // Inline module script
+                        if (atts.getIndex("", "integrity") >= 0) {
+                            err("An inline “script” element with"
+                                    + " “type=module” must not have"
+                                    + " an “integrity” attribute.");
+                        }
+                        if (atts.getIndex("", "fetchpriority") >= 0) {
+                            err("An inline “script” element with"
+                                    + " “type=module” must not have"
+                                    + " a “fetchpriority” attribute.");
+                        }
+                        if (atts.getIndex("", "blocking") >= 0) {
+                            err("An inline “script” element with"
+                                    + " “type=module” must not have"
+                                    + " a “blocking” attribute.");
+                        }
+                    }
+                } else if (isClassicScript) {
+                    // Classic scripts
+                    if (scriptType.isEmpty() || JAVASCRIPT_MIME_TYPES.contains(scriptType)) {
+                        if (!scriptType.isEmpty()) {
+                            warn("The “type” attribute is unnecessary for"
+                                    + " JavaScript resources.");
+                        }
+                    }
+                    if (!hasSrc) {
+                        // Inline classic script
+                        if (atts.getIndex("", "defer") >= 0) {
+                            err("An inline “script” element"
+                                    + " (i.e., a “script” element without"
+                                    + " a “src” attribute and with a"
+                                    + " “type” attribute that is either"
+                                    + " unspecified, empty, or a JavaScript MIME type)"
+                                    + " must not have a “defer” attribute.");
+                        }
+                        if (atts.getIndex("", "async") >= 0) {
+                            err("An inline classic “script” element"
+                                    + " (i.e., a “script” element without"
+                                    + " a “src” attribute and with a"
+                                    + " “type” attribute that is either"
+                                    + " unspecified, empty, or a JavaScript MIME type)"
+                                    + " must not have an “async” attribute.");
+                        }
+                        if (atts.getIndex("", "integrity") >= 0) {
+                            err("An inline classic “script” element"
+                                    + " (i.e., a “script” element without"
+                                    + " a “src” attribute and with a"
+                                    + " “type” attribute that is either"
+                                    + " unspecified, empty, or a JavaScript MIME type)"
+                                    + " must not have an “integrity” attribute.");
+                        }
+                        if (atts.getIndex("", "fetchpriority") >= 0) {
+                            err("An inline classic “script” element"
+                                    + " (i.e., a “script” element without"
+                                    + " a “src” attribute and with a"
+                                    + " “type” attribute that is either"
+                                    + " unspecified, empty, or a JavaScript MIME type)"
+                                    + " must not have a “fetchpriority” attribute.");
+                        }
+                        if (atts.getIndex("", "blocking") >= 0) {
+                            err("An inline classic “script” element"
+                                    + " (i.e., a “script” element without"
+                                    + " a “src” attribute and with a"
+                                    + " “type” attribute that is either"
+                                    + " unspecified, empty, or a JavaScript MIME type)"
+                                    + " must not have a “blocking” attribute.");
+                        }
                     }
                 }
-                if (atts.getIndex("", "type") > -1) {
-                    String scriptType = atts.getValue("", "type").toLowerCase();
-                    if (JAVASCRIPT_MIME_TYPES.contains(scriptType)
-                            || "".equals(scriptType)) {
-                        warn("The \u201Ctype\u201D attribute is unnecessary for"
-                                + " JavaScript resources.");
-                    } else if ("module".equals(scriptType)) {
-                        if (atts.getIndex("", "defer") > -1) {
-                            err("A \u201Cscript\u201D element with a"
-                                    + " \u201Cdefer\u201D attribute must not have a"
-                                    + " \u201Ctype\u201D attribute with the value"
-                                    + " \u201Cmodule\u201D.");
-                        }
-                        if (atts.getIndex("", "nomodule") > -1) {
-                            err("A \u201Cscript\u201D element with a"
-                                    + " \u201Cnomodule\u201D attribute must not have a"
-                                    + " \u201Ctype\u201D attribute with the value"
-                                    + " \u201Cmodule\u201D.");
-                        }
-                    } else if ("importmap".equals(scriptType)) {
-                        if (atts.getIndex("", "src") > -1) {
-                            err("A \u201cscript\u201d element with a"
-                                    + " \u201ctype\u201d attribute whose value"
-                                    + " is \u201cimportmap\u201d must not have"
-                                    + " a \u201Csrc\u201D attribute.");
-                        }
-                        parsingScriptImportMap = true;
-                    }
+
+                // charset validation (inline scripts must not have charset)
+                if (!hasSrc && atts.getIndex("", "charset") >= 0) {
+                    err("Element “script” must not have attribute"
+                            + " “charset” unless attribute “src”"
+                            + " is also specified.");
                 }
             }
             else if ("style" == localName) {
                 if (atts.getIndex("", "type") > -1) {
                     String styleType = atts.getValue("", "type").toLowerCase();
                     if ("text/css".equals(styleType)) {
-                        warn("The \u201Ctype\u201D attribute for the"
-                                + " \u201Cstyle\u201D element is not needed and"
+                        warn("The “type” attribute for the"
+                                + " “style” element is not needed and"
                                 + " should be omitted.");
                     } else {
-                        err("The only allowed value for the \u201Ctype\u201D"
-                                + " attribute for the \u201Cstyle\u201D element"
-                                + " is \u201Ctext/css\u201D (with no"
+                        err("The only allowed value for the “type”"
+                                + " attribute for the “style” element"
+                                + " is “text/css” (with no"
                                 + " parameters). (But the attribute is not"
                                 + " needed and should be omitted altogether.)");
                     }
                 }
             }
 
-            // bdo required attrs
-            else if ("bdo" == localName && atts.getIndex("", "dir") < 0) {
-                err("Element \u201Cbdo\u201D must have attribute \u201Cdir\u201D.");
+            else if ("bdo" == localName) {
+                if (atts.getIndex("", "dir") < 0) {
+                    err("Element “bdo” must have attribute"
+                            + " “dir”.");
+                } else if ("auto".equals(
+                            atts.getValue("", "dir").toLowerCase())) {
+                    err("The value of “dir” attribute for the"
+                            + " “bdo” element must not be"
+                            + " “auto”.");
+                }
             }
 
             // labelable elements
             if (isLabelableElement(localName, atts)) {
                 for (Map.Entry<StackNode, Locator> entry : openLabels.entrySet()) {
-                    StackNode node = entry.getKey();
+                    StackNode label = entry.getKey();
                     Locator locator = entry.getValue();
-                    if (node.isLabeledDescendants()) {
-                        err("The \u201Clabel\u201D element may contain at most"
-                                + " one \u201Cbutton\u201D, \u201Cinput\u201D,"
-                                + " \u201Cmeter\u201D, \u201Coutput\u201D,"
-                                + " \u201Cprogress\u201D, \u201Cselect\u201D,"
-                                + " or \u201Ctextarea\u201D descendant.");
-                        warn("\u201Clabel\u201D element with multiple labelable"
+                    Attributes labelAttributes = label.atts;
+                    if (labelAttributes.getIndex("", "role") > -1) {
+                        err("The “role” attribute must not be used on any"
+                                + " “label” element that is an"
+                                + " ancestor of a labelable element.",
+                                locator);
+                    }
+                    for (int i = 0; i < labelAttributes.getLength(); i++) {
+                        String attLocal = labelAttributes.getLocalName(i);
+                        if (attLocal.startsWith("aria-")) {
+                            err("The “" + attLocal + "” attribute must not"
+                                    + " be used on any “label” element"
+                                    + " that is an ancestor of a labelable element.",
+                                    locator);
+                        }
+                    }
+                    if (label.isLabeledDescendants()) {
+                        err("The “label” element may contain at most"
+                                + " one “button”, “input”,"
+                                + " “meter”, “output”,"
+                                + " “progress”, “select”,"
+                                + " or “textarea” descendant.");
+                        warn("“label” element with multiple labelable"
                                 + " descendants.", locator);
                     } else {
-                        node.setLabeledDescendants();
+                        label.setLabeledDescendants();
                     }
                 }
                 if ((ancestorMask & LABEL_FOR_MASK) != 0) {
@@ -3001,11 +3929,11 @@ public class Assertions extends Checker {
                         }
                     }
                     if (id == null || !hasMatchingFor) {
-                        err("Any \u201C" + localName
-                                + "\u201D descendant of a \u201Clabel\u201D"
-                                + " element with a \u201Cfor\u201D attribute"
+                        err("Any “" + localName
+                                + "” descendant of a “label”"
+                                + " element with a “for” attribute"
                                 + " must have an ID value that matches that"
-                                + " \u201Cfor\u201D attribute.");
+                                + " “for” attribute.");
                     }
                 }
             }
@@ -3013,7 +3941,7 @@ public class Assertions extends Checker {
             // lang and xml:lang for XHTML5
             if (lang != null && xmlLang != null
                     && !equalsIgnoreAsciiCase(lang, xmlLang)) {
-                err("When the attribute \u201Clang\u201D in no namespace and the attribute \u201Clang\u201D in the XML namespace are both present, they must have the same value.");
+                err("When the attribute “lang” in no namespace and the attribute “lang” in the XML namespace are both present, they must have the same value.");
             }
 
             if (role != null && owns != null) {
@@ -3034,20 +3962,43 @@ public class Assertions extends Checker {
                 }
             }
             if ("datalist" == localName) {
-                listIds.addAll(ids);
+                listIds.putAll(ids);
             }
 
             // label for
             if ("label" == localName) {
                 String forVal = atts.getValue("", "for");
                 if (forVal != null) {
-                    formControlReferences.add(new IdrefLocator(
-                            new LocatorImpl(getDocumentLocator()), forVal));
+                    formControlReferences.add(new IdReference(
+                                new LocatorImpl(getDocumentLocator()),
+                                forVal, localName, new AttributesImpl(atts)));
+                }
+            }
+
+            // button commandfor
+            if ("button" == localName) {
+                String commandforVal = atts.getValue("", "commandfor");
+                if (commandforVal != null) {
+                    commandForReferences.add(new IdrefLocator(
+                            new LocatorImpl(getDocumentLocator()), commandforVal));
                 }
             }
 
             if ("form" == localName) {
-                formElementIds.addAll(ids);
+                formElementIds.putAll(ids);
+                if (atts.getIndex("action") > -1
+                        && "".equals(atts.getValue("", "action"))) {
+                    info("To set the document\u2019s location as the action for"
+                            + " a form, omit the “action” attribute.");
+                }
+            }
+
+            if ("area" == localName) {
+                if (atts.getIndex("href") < 0 && atts.getIndex("alt") > -1) {
+                    info("Either remove the “alt” attribute from this"
+                            + " “area” element, or else, add an"
+                            + " “href” attribute.");
+                }
             }
 
             if (("button" == localName //
@@ -3058,7 +4009,7 @@ public class Assertions extends Checker {
                     || "select" == localName //
                     || "textarea" == localName //
                     || isCustomElement) {
-                formControlIds.addAll(ids);
+                formControlIds.putAll(ids);
             }
 
             if ("button" == localName || "fieldset" == localName
@@ -3082,14 +4033,13 @@ public class Assertions extends Checker {
             if ("input" == localName
                     && AttributeUtil.lowerCaseLiteralEqualsIgnoreAsciiCaseString(
                             "checkbox", atts.getValue("", "type"))) {
-                if ("button".equals(role)
-                        && !"true".equals(atts.getValue("", "aria-pressed"))) {
-                    err("An \u201Cinput\u201D element with a \u201Ctype\u201D"
-                            + " attribute whose value is \u201Ccheckbox\u201D"
-                            + " and with a \u201Crole\u201D attribute whose"
-                            + " value is \u201Cbutton\u201D must have an"
-                            + " \u201Caria-pressed\u201D attribute whose value"
-                            + " is \u201Ctrue\u201D.");
+                if ("button".equals(role )
+                        && atts.getIndex("", "aria-pressed") < 0) {
+                    err("An “input” element with a “type”"
+                            + " attribute whose value is “checkbox”"
+                            + " and with a “role” attribute whose"
+                            + " value is “button” must have an"
+                            + " “aria-pressed” attribute.");
                 }
             }
 
@@ -3099,14 +4049,14 @@ public class Assertions extends Checker {
                             "button", atts.getValue("", "type"))) {
                 if (atts.getValue("", "value") == null
                         || "".equals(atts.getValue("", "value"))) {
-                    err("Element \u201Cinput\u201D with attribute \u201Ctype\u201D whose value is \u201Cbutton\u201D must have non-empty attribute \u201Cvalue\u201D.");
+                    err("Element “input” with attribute “type” whose value is “button” must have non-empty attribute “value”.");
                 }
             }
 
             // track
             if ("track" == localName) {
                 if ("".equals(atts.getValue("", "label"))) {
-                    err("Attribute \u201Clabel\u201D for element \u201Ctrack\u201D must have non-empty value.");
+                    err("Attribute “label” for element “track” must have non-empty value.");
                 }
             }
 
@@ -3115,7 +4065,7 @@ public class Assertions extends Checker {
                 for (Map.Entry<StackNode, Locator> entry : openSingleSelects.entrySet()) {
                     StackNode node = entry.getKey();
                     if (node.isSelectedOptions()) {
-                        err("The \u201Cselect\u201D element cannot have more than one selected \u201Coption\u201D descendant unless the \u201Cmultiple\u201D attribute is specified.");
+                        err("The “select” element cannot have more than one selected “option” descendant unless the “multiple” attribute is specified.");
                     } else {
                         node.setSelectedOptions();
                     }
@@ -3124,7 +4074,7 @@ public class Assertions extends Checker {
             if ("meta" == localName) {
                 if (AttributeUtil.lowerCaseLiteralEqualsIgnoreAsciiCaseString(
                         "content-language", atts.getValue("", "http-equiv"))) {
-                    err("Using the \u201Cmeta\u201D element to specify the"
+                    err("Using the “meta” element to specify the"
                             + " document-wide default language is obsolete."
                             + " Consider specifying the language on the root"
                             + " element instead.");
@@ -3132,41 +4082,50 @@ public class Assertions extends Checker {
                         "x-ua-compatible", atts.getValue("", "http-equiv"))
                         && !AttributeUtil.lowerCaseLiteralEqualsIgnoreAsciiCaseString(
                                 "ie=edge", atts.getValue("", "content"))) {
-                    err("A \u201Cmeta\u201D element with an"
-                            + " \u201Chttp-equiv\u201D attribute whose value is"
-                            + " \u201CX-UA-Compatible\u201D" + " must have a"
-                            + " \u201Ccontent\u201D attribute with the value"
-                            + " \u201CIE=edge\u201D.");
+                    err("A “meta” element with an"
+                            + " “http-equiv” attribute whose value is"
+                            + " “X-UA-Compatible”" + " must have a"
+                            + " “content” attribute with the value"
+                            + " “IE=edge”.");
                 }
                 if (atts.getIndex("", "charset") > -1) {
                     if (!"utf-8".equals(
                             atts.getValue("", "charset").toLowerCase())) {
-                        err("The only allowed value for the \u201Ccharset\u201D"
-                                + " attribute for the \u201Cmeta\u201D"
-                                + " element is \u201Cutf-8\u201D.");
+                        err("The only allowed value for the “charset”"
+                                + " attribute for the “meta”"
+                                + " element is “utf-8”.");
                     }
                     if (hasMetaCharset) {
                         err("A document must not include more than one"
-                                + " \u201Cmeta\u201D element with a"
-                                + " \u201Ccharset\u201D attribute.");
+                                + " “meta” element with a"
+                                + " “charset” attribute.");
                     }
                     if (hasContentTypePragma) {
                         err("A document must not include both a"
-                                + " \u201Cmeta\u201D element with an"
-                                + " \u201Chttp-equiv\u201D attribute"
-                                + " whose value is \u201Ccontent-type\u201D,"
-                                + " and a \u201Cmeta\u201D element with a"
-                                + " \u201Ccharset\u201D attribute.");
+                                + " “meta” element with an"
+                                + " “http-equiv” attribute"
+                                + " whose value is “content-type”,"
+                                + " and a “meta” element with a"
+                                + " “charset” attribute.");
                     }
                     hasMetaCharset = true;
                 }
                 if (atts.getIndex("", "name") > -1) {
+                    if (atts.getIndex("", "itemprop") > -1) {
+                        info("Either remove the “itemprop” attribute"
+                                + " from this “meta” element, or else,"
+                                + " remove the “name” attribute."
+                                + " Exactly one of the “name”,"
+                                + " “http-equiv”, “charset”,"
+                                + " and “itemprop” attributes must"
+                                + " be specified.");
+                    }
                     if ("description".equals(atts.getValue("", "name"))) {
                         if (hasMetaDescription) {
                             err("A document must not include more than one"
-                                    + " \u201Cmeta\u201D element with its"
-                                    + " \u201Cname\u201D attribute set to the"
-                                    + " value \u201Cdescription\u201D.");
+                                    + " “meta” element with its"
+                                    + " “name” attribute set to the"
+                                    + " value “description”.");
                         }
                         hasMetaDescription = true;
                     }
@@ -3213,17 +4172,17 @@ public class Assertions extends Checker {
                                 atts.getValue("", "http-equiv"))) {
                     if (hasMetaCharset) {
                         err("A document must not include both a"
-                                + " \u201Cmeta\u201D element with an"
-                                + " \u201Chttp-equiv\u201D attribute"
-                                + " whose value is \u201Ccontent-type\u201D,"
-                                + " and a \u201Cmeta\u201D element with a"
-                                + " \u201Ccharset\u201D attribute.");
+                                + " “meta” element with an"
+                                + " “http-equiv” attribute"
+                                + " whose value is “content-type”,"
+                                + " and a “meta” element with a"
+                                + " “charset” attribute.");
                     }
                     if (hasContentTypePragma) {
                         err("A document must not include more than one"
-                                + " \u201Cmeta\u201D element with a"
-                                + " \u201Chttp-equiv\u201D attribute"
-                                + " whose value is \u201Ccontent-type\u201D.");
+                                + " “meta” element with a"
+                                + " “http-equiv” attribute"
+                                + " whose value is “content-type”.");
                     }
                     hasContentTypePragma = true;
                 }
@@ -3231,13 +4190,14 @@ public class Assertions extends Checker {
                         && (atts.getIndex("", "name") <= -1
                                 || !atts.getValue("", "name").equalsIgnoreCase(
                                         "theme-color"))) {
-                    err("A \u201Cmeta\u201D element with a \u201Cmedia\u201D"
-                            + " attribute must have a \u201Cname\u201D"
+                    err("A “meta” element with a “media”"
+                            + " attribute must have a “name”"
                             + " attribute whose value is"
-                            + " \u201Ctheme-color\u201D.");
+                            + " “theme-color”.");
                 }
             }
             if ("link" == localName) {
+                hasLinkOrScript = true;
                 boolean hasRel = false;
                 List<String> relList = new ArrayList<>();
                 if (atts.getIndex("", "rel") > -1) {
@@ -3245,50 +4205,80 @@ public class Assertions extends Checker {
                     Collections.addAll(relList, //
                             atts.getValue("", "rel") //
                             .toLowerCase().split("\\s+"));
+                    if (atts.getIndex("", "itemprop") > -1) {
+                        info("Either remove the “itemprop” attribute"
+                                + " from this “link” element, or else,"
+                                + " remove the “rel” attribute."
+                                + " A “link” element must have either"
+                                + " a “rel” attribute, or an"
+                                + " “itemprop” attribute, but not both.");
+                    }
                 }
                 if (atts.getIndex("", "href") == -1
                         && atts.getIndex("", "imagesrcset") == -1
                         && atts.getIndex("", "resource") == -1) { //rdfa
-                    err("A \u201Clink\u201D element must have an"
-                                + " \u201Chref\u201D or \u201Cimagesrcset\u201D"
+                    err("A “link” element must have an"
+                                + " “href” or “imagesrcset”"
                                 + " attribute, or both.");
                 }
                 if (relList.contains("preload")
                         && atts.getIndex("", "as") < 0) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cpreload\u201D must have an"
-                            + " \u201Cas\u201D attribute.");
+                    err("A “link” element with a"
+                            + " “rel” attribute that contains the"
+                            + " value “preload” must have an"
+                            + " “as” attribute.");
                 }
                 if (atts.getIndex("", "as") > -1 //
                         && (!(relList.contains("preload")
                                 || relList.contains("modulepreload")) //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with an"
-                            + " \u201Cas\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cpreload\u201D or the value"
-                            + " \u201Cmodulepreload\u201D.");
+                    err("A “link” element with an"
+                            + " “as” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “preload” or the value"
+                            + " “modulepreload”.");
+                }
+                if (atts.getIndex("", "as") > -1
+                        && relList.contains("preload")
+                        && !PRELOAD_DESTINATIONS.contains(
+                                atts.getValue("", "as"))) {
+                    err("The value “"
+                            + atts.getValue("", "as") + "”"
+                            + " is not a valid value for"
+                            + " the “as” attribute of a"
+                            + " “link” element with"
+                            + " “rel=preload”.");
+                }
+                if (atts.getIndex("", "as") > -1
+                        && relList.contains("modulepreload")
+                        && !MODULE_PRELOAD_DESTINATIONS.contains(
+                                atts.getValue("", "as"))) {
+                    err("The value “"
+                            + atts.getValue("", "as") + "”"
+                            + " is not a valid value for"
+                            + " the “as” attribute of a"
+                            + " “link” element with"
+                            + " “rel=modulepreload”.");
                 }
                 if (atts.getIndex("", "integrity") > -1
                         && (!(relList.contains("stylesheet")
                                 || relList.contains("preload")
                                 || relList.contains("modulepreload")) //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with an"
-                            + " \u201Cintegrity\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cstylesheet\u201D or the value"
-                            + " \u201Cpreload\u201D or the value"
-                            + " \u201Cmodulepreload\u201D.");
+                    err("A “link” element with an"
+                            + " “integrity” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “stylesheet” or the value"
+                            + " “preload” or the value"
+                            + " “modulepreload”.");
                 }
                 if (atts.getIndex("", "disabled") > -1
                         && (!relList.contains("stylesheet") //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Cdisabled\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cstylesheet\u201D.");
+                    err("A “link” element with a"
+                            + " “disabled” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “stylesheet”.");
                 }
                 if (atts.getIndex("", "sizes") > -1
                         && (!(relList.contains("icon")
@@ -3296,91 +4286,91 @@ public class Assertions extends Checker {
                                 || relList.contains(
                                         "apple-touch-icon-precomposed"))
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Csizes\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cicon\u201D or the value"
-                            + " \u201Capple-touch-icon\u201D or the value"
-                            + " \u201Capple-touch-icon-precomposed\u201D.");
+                    err("A “link” element with a"
+                            + " “sizes” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “icon” or the value"
+                            + " “apple-touch-icon” or the value"
+                            + " “apple-touch-icon-precomposed”.");
                 }
                 if (atts.getIndex("", "color") > -1
                         && (!relList.contains("mask-icon") //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Ccolor\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains"
-                            + " the value \u201Cmask-icon\u201D.");
+                    err("A “link” element with a"
+                            + " “color” attribute must have a"
+                            + " “rel” attribute that contains"
+                            + " the value “mask-icon”.");
                 }
                 if (atts.getIndex("", "scope") > -1
                         && (!relList.contains("serviceworker") //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Cscope\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cserviceworker\u201D.");
+                    err("A “link” element with a"
+                            + " “scope” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “serviceworker”.");
                 }
                 if (atts.getIndex("", "updateviacache") > -1
                         && (!relList.contains("serviceworker") //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with an"
-                            + " \u201Cupdateviacache\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cserviceworker\u201D.");
+                    err("A “link” element with an"
+                            + " “updateviacache” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “serviceworker”.");
                 }
                 if (atts.getIndex("", "workertype") > -1
                         && (!relList.contains("serviceworker") //
                                 || !hasRel)) {
-                    err("A \u201Clink\u201D element with a"
-                            + " \u201Cworkertype\u201D attribute must have a"
-                            + " \u201Crel\u201D attribute that contains the"
-                            + " value \u201Cserviceworker\u201D.");
+                    err("A “link” element with a"
+                            + " “workertype” attribute must have a"
+                            + " “rel” attribute that contains the"
+                            + " value “serviceworker”.");
                 }
                 if (atts.getIndex("", "imagesrcset") > -1
                         && !(relList.contains("preload")
                         || !hasRel)) {
-                    err("A \u201Clink\u201D element with an"
-                                + " \u201Cimagesrcset\u201D attribute must have a"
-                                + " \u201Crel\u201D attribute that contains the"
-                                + " value \u201Cpreload\u201D.");
+                    err("A “link” element with an"
+                                + " “imagesrcset” attribute must have a"
+                                + " “rel” attribute that contains the"
+                                + " value “preload”.");
                 }
                 if (atts.getIndex("", "imagesizes") > -1
                         && !(relList.contains("preload")
                         || !hasRel)) {
-                    err("A \u201Clink\u201D element with an"
-                                + " \u201Cimagesizes\u201D attribute must have a"
-                                + " \u201Crel\u201D attribute that contains the"
-                                + " value \u201Cpreload\u201D.");
+                    err("A “link” element with an"
+                                + " “imagesizes” attribute must have a"
+                                + " “rel” attribute that contains the"
+                                + " value “preload”.");
                 }
                 if (atts.getIndex("", "imagesrcset") > -1
                         && (atts.getIndex("", "as") == -1
                         || !atts.getValue("", "as").equalsIgnoreCase("image"))) {
-                    err("A \u201Clink\u201D element with an"
-                                + " \u201Cimagesrcset\u201D attribute must have an"
-                                + " \u201Cas\u201D attribute with value \u201Cimage\u201D.");
+                    err("A “link” element with an"
+                                + " “imagesrcset” attribute must have an"
+                                + " “as” attribute with value “image”.");
                 }
                 if (atts.getIndex("", "imagesizes") > -1
                         && (atts.getIndex("", "as") == -1
                         || !atts.getValue("", "as").equalsIgnoreCase("image"))) {
-                    err("A \u201Clink\u201D element with an"
-                                + " \u201Cimagesizes\u201D attribute must have an"
-                                + " \u201Cas\u201D attribute with value \u201Cimage\u201D.");
+                    err("A “link” element with an"
+                                + " “imagesizes” attribute must have an"
+                                + " “as” attribute with value “image”.");
                 }
                 if (relList.contains("alternate")
                         && relList.contains("stylesheet")
                         && (atts.getIndex("", "title") == -1
                             || "".equals(atts.getValue("", "title")))) {
-                    err("A \u201Clink\u201D element with a"
-                                + " \u201Crel\u201D attribute that"
+                    err("A “link” element with a"
+                                + " “rel” attribute that"
                                 + " contains both the values"
-                                + " \u201Calternate\u201D and"
-                                + " \u201Cstylesheet\u201D must have a"
-                                + " \u201Ctitle\u201D attribute with a"
+                                + " “alternate” and"
+                                + " “stylesheet” must have a"
+                                + " “title” attribute with a"
                                 + " non-empty value.");
                 }
                 if (atts.getIndex("", "fetchpriority") > -1
                         && Arrays.stream(EXTERNAL_RESOURCE_LINK_REL).noneMatch(relList::contains)) {
-                    warn("A \u201Clink\u201D element with \u201Cfetchpriority\u201D"
-                                + " attribute should have a \u201Crel\u201D"
+                    warn("A “link” element with “fetchpriority”"
+                                + " attribute should have a “rel”"
                                 + " attribute containing external resource type.");
                 }
                 if ((ancestorMask & BODY_MASK) != 0
@@ -3395,89 +4385,99 @@ public class Assertions extends Checker {
                                         || relList.contains("stylesheet")))
                         && atts.getIndex("", "itemprop") < 0
                         && atts.getIndex("", "property") < 0) {
-                    err("A \u201Clink\u201D element must not appear"
-                            + " as a descendant of a \u201Cbody\u201D element"
-                            + " unless the \u201Clink\u201D element has an"
-                            + " \u201Citemprop\u201D attribute or has a"
-                            + " \u201Crel\u201D attribute whose value contains"
-                            + " \u201Cdns-prefetch\u201D,"
-                            + " \u201Cmodulepreload\u201D,"
-                            + " \u201Cpingback\u201D,"
-                            + " \u201Cpreconnect\u201D,"
-                            + " \u201Cprefetch\u201D,"
-                            + " \u201Cpreload\u201D,"
-                            + " \u201Cprerender\u201D, or"
-                            + " \u201Cstylesheet\u201D.");
+                    err("A “link” element must not appear"
+                            + " as a descendant of a “body” element"
+                            + " unless the “link” element has an"
+                            + " “itemprop” attribute or has a"
+                            + " “rel” attribute whose value contains"
+                            + " “dns-prefetch”,"
+                            + " “modulepreload”,"
+                            + " “pingback”,"
+                            + " “preconnect”,"
+                            + " “prefetch”,"
+                            + " “preload”,"
+                            + " “prerender”, or"
+                            + " “stylesheet”.");
                 }
                 if (atts.getIndex("", "blocking") > -1
                         && (atts.getIndex("", "rel") == -1
                         || !relList.contains("stylesheet"))) {
-                    err("A \u201Clink\u201D element with a"
-                                + " \u201Cblocking\u201D attribute must have a"
-                                + " \u201Crel\u201D attribute whose value is"
-                                + " \u201Cstylesheet\u201D.");
+                    err("A “link” element with a"
+                                + " “blocking” attribute must have a"
+                                + " “rel” attribute whose value is"
+                                + " “stylesheet”.");
                 }
             }
 
             // microdata
             if (itemid && !(itemscope && itemtype)) {
-                err("The \u201Citemid\u201D attribute must not be specified on elements that do not have both an \u201Citemscope\u201D attribute and an \u201Citemtype\u201D attribute specified.");
+                err("The “itemid” attribute must not be specified on elements that do not have both an “itemscope” attribute and an “itemtype” attribute specified.");
             }
             if (itemref && !itemscope) {
-                err("The \u201Citemref\u201D attribute must not be specified on elements that do not have an \u201Citemscope\u201D attribute specified.");
+                err("The “itemref” attribute must not be specified on elements that do not have an “itemscope” attribute specified.");
             }
             if (itemtype && !itemscope) {
-                err("The \u201Citemtype\u201D attribute must not be specified on elements that do not have an \u201Citemscope\u201D attribute specified.");
+                err("The “itemtype” attribute must not be specified on elements that do not have an “itemscope” attribute specified.");
             }
 
             // Errors for use of ARIA attributes that conflict with native
             // element semantics.
             if (atts.getIndex("", "contenteditable") > -1
                     && "true".equals(atts.getValue("", "aria-readonly"))) {
-                err("The \u201Caria-readonly\u201D attribute must only be"
-                        + " specified with a value of \u201Cfalse\u201D"
-                        + " on elements that have a \u201Ccontenteditable\u201D"
+                err("The “aria-readonly” attribute must only be"
+                        + " specified with a value of “false”"
+                        + " on elements that have a “contenteditable”"
                         + " attribute.");
             }
             if (atts.getIndex("", "aria-placeholder") > -1
                     && atts.getIndex("", "placeholder") > -1) {
-                err("The \u201Caria-placeholder\u201D attribute must not be"
+                err("The “aria-placeholder” attribute must not be"
                         + " specified on elements that have a"
-                        + " \u201Cplaceholder\u201D attribute.");
+                        + " “placeholder” attribute.");
             }
             // Warnings for use of ARIA attributes with markup already
             // having implicit ARIA semantics.
-            if (ELEMENTS_WITH_IMPLICIT_ROLE.containsKey(localName)
+            if ("header".equals(localName)
+                    && "banner".equals(role)
+                    && !isDescendantOfSectioningElement()) {
+                warn("The “banner” role is unnecessary for"
+                        + " element “header”.");
+            } else if ("footer".equals(localName)
+                    && "contentinfo".equals(role)
+                    && !isDescendantOfSectioningElement()) {
+                warn("The “contentinfo” role is unnecessary"
+                        + " for element “footer”.");
+            } else if (ELEMENTS_WITH_IMPLICIT_ROLE.containsKey(localName)
                     && ELEMENTS_WITH_IMPLICIT_ROLE.get(localName).equals(
                             role)) {
                 if (!("img".equals(localName)
                         && ("".equals(atts.getValue("", "alt"))))) {
-                    warn("The \u201C" + role + "\u201D role is unnecessary for"
-                            + " element" + " \u201C" + localName + "\u201D.");
+                    warn("The “" + role + "” role is unnecessary for"
+                            + " element" + " “" + localName + "”.");
                 }
             } else if (ELEMENTS_WITH_IMPLICIT_ROLES.containsKey(localName)
                     && role != null
                     && Arrays.binarySearch(
                             ELEMENTS_WITH_IMPLICIT_ROLES.get(localName),
                             role) >= 0) {
-                warn("The \u201C" + role + "\u201D role is unnecessary for"
-                        + " element" + " \u201C" + localName + "\u201D.");
+                warn("The “" + role + "” role is unnecessary for"
+                        + " element" + " “" + localName + "”.");
             } else if (ELEMENTS_THAT_NEVER_NEED_ROLE.containsKey(localName)
                     && ELEMENTS_THAT_NEVER_NEED_ROLE.get(localName).equals(
                             role)) {
-                warn("Element \u201C" + localName + "\u201D does not need a"
-                        + " \u201Crole\u201D attribute.");
+                warn("Element “" + localName + "” does not need a"
+                        + " “role” attribute.");
             } else if ("input" == localName) {
                 inputTypeVal = inputTypeVal == null ? "text" : inputTypeVal;
                 if ("radio".equals(inputTypeVal)
                         || "checkbox".equals(inputTypeVal)) {
                     if (atts.getIndex("", "aria-checked") >= 0
                             && !"".equals(atts.getValue("", "aria-checked"))) {
-                        err("The \u201Caria-checked\u201D attribute must not"
-                                + " be used on an \u201Cinput\u201D element"
-                                + " which has a \u201Ctype\u201D attribute"
-                                + " whose value is \u201C" + inputTypeVal
-                                + "\u201D.");
+                        err("The “aria-checked” attribute must not"
+                                + " be used on an “input” element"
+                                + " which has a “type” attribute"
+                                + " whose value is “" + inputTypeVal
+                                + "”.");
                     }
                 }
                 if ("date".equals(inputTypeVal)
@@ -3490,29 +4490,29 @@ public class Assertions extends Checker {
                     if (atts.getIndex("", "aria-valuemin") >= 0
                             && !"".equals(atts.getValue("", "aria-valuemin"))) {
                         if (atts.getIndex("", "min") >= 0) {
-                            err("The \u201Caria-valuemin\u201D attribute must"
+                            err("The “aria-valuemin” attribute must"
                                     + " not be used on an element which has a"
-                                    + " \u201Cmin\u201D attribute.");
+                                    + " “min” attribute.");
                         } else {
-                            warn("The \u201Caria-valuemin\u201D attribute"
+                            warn("The “aria-valuemin” attribute"
                                     + " should not be used on an"
-                                    + " \u201Cinput\u201D element which has a"
-                                    + " \u201Ctype\u201D attribute whose value"
-                                    + " is \u201C" + inputTypeVal + "\u201D.");
+                                    + " “input” element which has a"
+                                    + " “type” attribute whose value"
+                                    + " is “" + inputTypeVal + "”.");
                         }
                     }
                     if (atts.getIndex("", "aria-valuemax") >= 0
                             && !"".equals(atts.getValue("", "aria-valuemax"))) {
                         if (atts.getIndex("", "max") >= 0) {
-                            err("The \u201Caria-valuemax\u201D attribute must"
+                            err("The “aria-valuemax” attribute must"
                                     + " not be used on an element which has a"
-                                    + " \u201Cmax\u201D attribute.");
+                                    + " “max” attribute.");
                         } else {
-                            warn("The \u201Caria-valuemax\u201D attribute"
+                            warn("The “aria-valuemax” attribute"
                                     + " should not be used on an"
-                                    + " \u201Cinput\u201D element which has a"
-                                    + " \u201Ctype\u201D attribute whose value"
-                                    + " is \u201C" + inputTypeVal + "\u201D.");
+                                    + " “input” element which has a"
+                                    + " “type” attribute whose value"
+                                    + " is “" + inputTypeVal + "”.");
                         }
                     }
                 }
@@ -3529,66 +4529,66 @@ public class Assertions extends Checker {
                     if (atts.getIndex("", "list") < 0) {
                         if ("textbox".equals(role)
                                 && !"search".equals(inputTypeVal)) {
-                            warn("The \u201Ctextbox\u201D role is unnecessary"
-                                    + " for an \u201Cinput\u201D element that"
-                                    + " has no \u201Clist\u201D attribute and"
-                                    + " whose type is" + " \u201C"
-                                    + inputTypeVal + "\u201D.");
+                            warn("The “textbox” role is unnecessary"
+                                    + " for an “input” element that"
+                                    + " has no “list” attribute and"
+                                    + " whose type is" + " “"
+                                    + inputTypeVal + "”.");
                         }
                         if ("searchbox".equals(role)
                                 && "search".equals(inputTypeVal)) {
-                            warn("The \u201Csearchbox\u201D role is unnecessary"
-                                    + " for an \u201Cinput\u201D element that"
-                                    + " has no \u201Clist\u201D attribute and"
-                                    + " whose type is" + " \u201C"
-                                    + inputTypeVal + "\u201D.");
+                            warn("The “searchbox” role is unnecessary"
+                                    + " for an “input” element that"
+                                    + " has no “list” attribute and"
+                                    + " whose type is" + " “"
+                                    + inputTypeVal + "”.");
                         }
                     } else {
                         if ("combobox".equals(role)) {
-                            warn("The \u201Ccombobox\u201D role is unnecessary"
-                                    + " for an \u201Cinput\u201D element that"
-                                    + " has a \u201Clist\u201D attribute and"
-                                    + " whose type is" + " \u201C"
-                                    + inputTypeVal + "\u201D.");
+                            warn("The “combobox” role is unnecessary"
+                                    + " for an “input” element that"
+                                    + " has a “list” attribute and"
+                                    + " whose type is" + " “"
+                                    + inputTypeVal + "”.");
                         }
                         if (atts.getIndex("", "aria-haspopup") >= 0
                                 && !"".equals(
                                         atts.getValue("", "aria-haspopup"))) {
-                            warn("The \u201Caria-haspopup\u201D attribute"
+                            warn("The “aria-haspopup” attribute"
                                     + " should not be used on an"
-                                    + " \u201Cinput\u201D element that has a"
-                                    + " \u201Clist\u201D attribute and whose"
-                                    + " type is \u201C" + inputTypeVal
-                                    + "\u201D.");
+                                    + " “input” element that has a"
+                                    + " “list” attribute and whose"
+                                    + " type is “" + inputTypeVal
+                                    + "”.");
                         }
                     }
                 }
             } else if (atts.getIndex("", "href") > -1 && "link".equals(role)
                     && ("a".equals(localName) || "area".equals(localName)
                             || "link".equals(localName))) {
-                warn("The \u201Clink\u201D role is unnecessary for element"
-                        + " \u201C" + localName + "\u201D with attribute"
-                        + " \u201Chref\u201D.");
+                warn("The “link” role is unnecessary for element"
+                        + " “" + localName + "” with attribute"
+                        + " “href”.");
             } else if (atts.getIndex("", "href") > -1 && "link".equals(role)
                     && ("a".equals(localName) || "area".equals(localName)
                             || "link".equals(localName))) {
-                warn("The \u201Clink\u201D role is unnecessary for element"
-                        + " \u201C" + localName + "\u201D with attribute"
-                        + " \u201Chref\u201D.");
+                warn("The “link” role is unnecessary for element"
+                        + " “" + localName + "” with attribute"
+                        + " “href”.");
             } else if (("tbody".equals(localName) || "tfoot".equals(localName)
                     || "thead".equals(localName)) && "rowgroup".equals(role)) {
-                warn("The \u201Crowgroup\u201D role is unnecessary for element"
-                        + " \u201C" + localName + "\u201D.");
+                warn("The “rowgroup” role is unnecessary for element"
+                        + " “" + localName + "”.");
             } else if ("th" == localName && ("columnheader".equals(role)
-                    || "columnheader".equals(role))) {
-                warn("The \u201C" + role + "\u201D role is unnecessary for"
-                        + " element \u201Cth\u201D.");
+                    || "rowheader".equals(role))) {
+                warn("The “" + role + "” role is unnecessary for"
+                        + " element “th”.");
             } else if ("li" == localName && "listitem".equals(role)
                     && !"menu".equals(parentName)) {
-                warn("The \u201Clistitem\u201D role is unnecessary for an"
-                        + " \u201Cli\u201D element whose parent is"
-                        + " an \u201Col\u201D element or a"
-                        + " \u201Cul\u201D element.");
+                warn("The “listitem” role is unnecessary for an"
+                        + " “li” element whose parent is"
+                        + " an “ol” element or a"
+                        + " “ul” element.");
             } else if ("button" == localName && "button".equals(role)
                     && "menu".equals(atts.getValue("", "type"))) {
                 warnExplicitRoleUnnecessaryForType("button", "button", "menu");
@@ -3598,36 +4598,66 @@ public class Assertions extends Checker {
                         "toolbar");
             } else if ("li" == localName && "listitem".equals(role)
                     && !"menu".equals(parentName)) {
-                warn("The \u201Clistitem\u201D role is unnecessary for an"
-                        + " \u201Cli\u201D element whose parent is"
-                        + " an \u201Col\u201D element or a"
-                        + " \u201Cul\u201D element.");
+                warn("The “listitem” role is unnecessary for an"
+                        + " “li” element whose parent is"
+                        + " an “ol” element or a"
+                        + " “ul” element.");
+            }
+            if (atts.getIndex("", "aria-expanded") > -1) {
+                if (atts.getIndex("", "popovertarget") > -1) {
+                    err("The “aria-expanded” attribute must not be"
+                            + " used on any element which has a"
+                            + " “popovertarget” attribute.");
+                }
+                if (atts.getIndex("", "command") > -1) {
+                    err("The “aria-expanded” attribute must not be"
+                            + " used on any element which has a"
+                            + " “command” attribute.");
+                }
+            }
+            for (String aLabelAtt: new String[] { "aria-label",
+                    "aria-labelledby", "aria-braillelabel"}) {
+                if (atts.getIndex("", aLabelAtt) > -1) {
+                    if (isProhibitedFromBeingNamed(localName, roles, atts)) {
+                        String message =
+                            "The “" + aLabelAtt + "” attribute"
+                            + " must not be specified on any"
+                            + " “" + localName + "” element"
+                            + " unless the element has a"
+                            + " “role” value other than "
+                            + renderRoleSet(ROLES_WHICH_CANNOT_BE_NAMED);
+                        err(message + ".");
+                    }
+                }
             }
         } else {
             int len = atts.getLength();
             for (int i = 0; i < len; i++) {
-                boolean isEmptyAtt = !"".equals(atts.getValue(i));
+                String value = atts.getValue(i);
+                boolean isEmptyAtt = (value != null && value.length() == 0);
                 if (atts.getType(i) == "ID") {
-                    String attVal = atts.getValue(i);
-                    if (attVal.length() != 0) {
-                        ids.add(attVal);
+                    String attVal = value;
+                    if (attVal != null && attVal.length() != 0) {
+                        ids.put(attVal, new Element(
+                                    new LocatorImpl(getDocumentLocator()),
+                                    localName,
+                                    new AttributesImpl(atts)));
                     }
                 }
                 String attLocal = atts.getLocalName(i);
                 if (atts.getURI(i).length() == 0) {
                     if ("role" == attLocal) {
-                        role = atts.getValue(i);
+                        role = value;
                     } else if ("aria-activedescendant" == attLocal
                             && !isEmptyAtt) {
-                        System.out.println("found aria-activedescendant 1");
-                        activeDescendant = atts.getValue(i);
+                        activeDescendant = value;
                     } else if ("aria-owns" == attLocal && !isEmptyAtt) {
-                        owns = atts.getValue(i);
+                        owns = value;
                     }
                 }
             }
 
-            allIds.addAll(ids);
+            allIds.putAll(ids);
         }
 
         // ARIA required owner/ancestors
@@ -3659,18 +4689,7 @@ public class Assertions extends Checker {
                 }
             }
         }
-        allIds.addAll(ids);
-
-        if (isAriaLabelMisuse(ariaLabel, localName, role, atts)) {
-            warn("Possible misuse of \u201Caria-label\u201D. (If you disagree"
-                    + " with this warning, file an issue report or send e-mail"
-                    + " to www-validator@w3.org.)");
-            incrementUseCounter("aria-label-misuse-found");
-            String systemId = getDocumentLocator().getSystemId();
-            if (systemId != null && hasPageEmitterInCallStack()) {
-                log4j.info("aria-label misuse " + systemId);
-            }
-        }
+        allIds.putAll(ids);
 
         // aria-activedescendant accompanied by aria-owns
         if (activeDescendant != null && !"".equals(activeDescendant)) {
@@ -3691,7 +4710,7 @@ public class Assertions extends Checker {
         // activedescendant
         for (Iterator<Map.Entry<StackNode, Locator>> iterator = openActiveDescendants.entrySet().iterator(); iterator.hasNext();) {
             Map.Entry<StackNode, Locator> entry = iterator.next();
-            if (ids.contains(entry.getKey().getActiveDescendant())) {
+            if (ids.containsKey(entry.getKey().getActiveDescendant())) {
                 iterator.remove();
             }
         }
@@ -3705,15 +4724,15 @@ public class Assertions extends Checker {
                 if (href) {
                     ancestorMask |= HREF_MASK;
                     if ("true".equals(atts.getValue("", "aria-disabled"))) {
-                        warn("An \u201Caria-disabled\u201D attribute whose"
-                                + " value is \u201Ctrue\u201D should not be"
-                                + " specified on an \u201Ca\u201D element"
-                                + " that has an \u201Chref\u201D attribute.");
+                        warn("An “aria-disabled” attribute whose"
+                                + " value is “true” should not be"
+                                + " specified on an “a” element"
+                                + " that has an “href” attribute.");
                     }
                 }
             }
             StackNode child = new StackNode(ancestorMask, localName, role,
-                    activeDescendant, forAttr);
+                    roles, activeDescendant, forAttr, new AttributesImpl(atts));
             if ("style" == localName) {
                 child.setIsCollectingCharacters(true);
             }
@@ -3721,6 +4740,9 @@ public class Assertions extends Checker {
                 child.setIsCollectingCharacters(true);
             }
             if ("figure" == localName) {
+                child.setIsCollectingChildren(true);
+            }
+            if ("details" == localName) {
                 child.setIsCollectingChildren(true);
             }
             if (activeDescendant != null && !activeDescendantWithAriaOwns) {
@@ -3749,9 +4771,9 @@ public class Assertions extends Checker {
                 boolean sizeIsGreaterThanOne = false;
                 boolean hasMultiple = atts.getIndex("", "multiple") > -1;
                 if (atts.getIndex("", "aria-multiselectable") > -1) {
-                    warn("The \u201Caria-multiselectable\u201D attribute"
-                            + " should not be used with the \u201Cselect"
-                            + " \u201D element.");
+                    warn("The “aria-multiselectable” attribute"
+                            + " should not be used with the “select"
+                            + " ” element.");
                 }
                 if (atts.getIndex("", "size") > -1) {
                     hasSize = true;
@@ -3775,34 +4797,34 @@ public class Assertions extends Checker {
                 }
                 if (sizeIsGreaterThanOne || hasMultiple) {
                     if ("listbox".equals(role)) {
-                        warn("The \u201Clistbox\u201D role is unnecessary for"
-                                + " element \u201Cselect\u201D with a"
-                                + " \u201Cmultiple\u201D attribute or with a"
-                                + " \u201Csize\u201D attribute whose value"
+                        warn("The “listbox” role is unnecessary for"
+                                + " element “select” with a"
+                                + " “multiple” attribute or with a"
+                                + " “size” attribute whose value"
                                 + " is greater than 1.");
                     } else if (role != null) {
-                        err("A \u201Cselect\u201D element with a"
-                                + " \u201Cmultiple\u201D attribute or with a"
-                                + " \u201Csize\u201D attribute whose value"
+                        err("A “select” element with a"
+                                + " “multiple” attribute or with a"
+                                + " “size” attribute whose value"
                                 + " is greater than 1 must not have any"
-                                + " \u201Crole\u201D attribute.");
+                                + " “role” attribute.");
                     }
                 }
                 if (!hasMultiple) {
                     if (!sizeIsGreaterThanOne && role != null) {
                         if ("combobox".equals(role)) {
-                            warn("The \u201Ccombobox\u201D role is unnecessary"
-                                    + " for element \u201Cselect\u201D"
-                                    + " without a \u201Cmultiple\u201D"
+                            warn("The “combobox” role is unnecessary"
+                                    + " for element “select”"
+                                    + " without a “multiple”"
                                     + " attribute and without a"
-                                    + " \u201Csize\u201D attribute whose value"
+                                    + " “size” attribute whose value"
                                     + " is greater than 1.");
                         } else if (!"menu".equals(role)) {
-                            err("The \u201C" + role + "\u201D role is not"
-                                    + " allowed for element \u201Cselect\u201D"
-                                    + " without a \u201Cmultiple\u201D"
+                            err("The “" + role + "” role is not"
+                                    + " allowed for element “select”"
+                                    + " without a “multiple”"
                                     + " attribute and without a"
-                                    + " \u201Csize\u201D attribute whose value"
+                                    + " “size” attribute whose value"
                                     + " is greater than 1.");
                         }
                     }
@@ -3822,6 +4844,24 @@ public class Assertions extends Checker {
                         // ARIA
                 }
             }
+            if ("summary" == localName && "details".equals(parent.name)
+                    && !parent.getCollectedChildren().stream().anyMatch(
+                        s -> "summary" == s.getName())) {
+                for (int i = 0; i < atts.getLength(); i++) {
+                    String attLocal = atts.getLocalName(i);
+                    if ("role".equals(attLocal)
+                            || (attLocal.startsWith("aria-")
+                                && Arrays.binarySearch(ARIA_GLOBAL_ATTRIBUTES,
+                                    attLocal) < 0
+                                && !"aria-haspopup".equals(attLocal)
+                                && !"aria-disabled".equals(attLocal))) {
+                        err("The “" + attLocal + "” attribute must"
+                                + " not be used on any “summary”"
+                                + " element that is a summary for its parent"
+                                + " “details” element.");
+                    }
+                }
+            }
             if (parent != null && parent.isCollectingChildren()) {
                 parent.addChild(child);
             }
@@ -3839,12 +4879,12 @@ public class Assertions extends Checker {
              * allowing those elements in our RelaxNG schema, Jing on its own
              * won't emit any error for them).
              */
-            err("Element \u201c" + localName + "\u201d from namespace"
-                    + " \u201chttp://n.validator.nu/custom-elements/\u201d"
+            err("Element “" + localName + "” from namespace"
+                    + " “http://n.validator.nu/custom-elements/”"
                     + " not allowed.");
         } else {
-            StackNode child = new StackNode(ancestorMask, null, role,
-                    activeDescendant, forAttr);
+            StackNode child = new StackNode(ancestorMask, null, role, roles,
+                    activeDescendant, forAttr, new AttributesImpl(atts));
             if (activeDescendant != null) {
                 openActiveDescendants.put(child,
                         new LocatorImpl(getDocumentLocator()));
@@ -3939,25 +4979,25 @@ public class Assertions extends Checker {
             if (i == len - 1) {
                 sb.append("or ");
             }
-            sb.append("\u201C");
+            sb.append("“");
             sb.append(types[i]);
-            sb.append('\u201D');
+            sb.append('”');
         }
         return sb;
     }
 
     private CharSequence renderRoleSet(Set<String> roles) {
-        boolean first = true;
+        int size = roles.size();
         StringBuilder sb = new StringBuilder();
+        int index = 0;
         for (String role : roles) {
-            if (first) {
-                first = false;
-            } else {
-                sb.append(" or ");
+            sb.append('“').append(role).append('”');
+            index++;
+            if (index < size - 1) {
+                sb.append(", ");
+            } else if (index == size - 1) {
+                sb.append(", or ");
             }
-            sb.append("\u201Crole=");
-            sb.append(role);
-            sb.append('\u201D');
         }
         return sb;
     }

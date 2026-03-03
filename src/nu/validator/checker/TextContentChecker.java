@@ -25,8 +25,8 @@ package nu.validator.checker;
 
 import java.util.LinkedList;
 
-import org.relaxng.datatype.DatatypeException;
-import org.relaxng.datatype.DatatypeStreamingValidator;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeStreamingValidator;
 import nu.validator.datatype.Html5DatatypeException;
 import nu.validator.datatype.TimeDatetime;
 import nu.validator.datatype.ScriptDocumentation;
@@ -127,14 +127,14 @@ public final class TextContentChecker extends Checker {
             throws SAXException {
         if (inEmptyTitleOrOption && XHTML_URL.equals(uri)
                 && "title".equals(localName)) {
-            err("Element \u201Ctitle\u201d must not be empty.");
+            err("Element “title” must not be empty.");
             inEmptyTitleOrOption = false;
         } else if (inEmptyTitleOrOption && XHTML_URL.equals(uri)
                 && "option".equals(localName)
                 && !(parent != null && XHTML_URL.equals(parent[0])
                         && "datalist".equals(parent[1]))) {
-            err("Element \u201Coption\u201d without "
-                    + "attribute \u201clabel\u201d must not be empty.");
+            err("Element “option” without "
+                    + "attribute “label” must not be empty.");
             inEmptyTitleOrOption = false;
         }
         openElements.pop();
@@ -145,9 +145,9 @@ public final class TextContentChecker extends Checker {
             } catch (DatatypeException e) {
                 String msg = e.getMessage();
                 if (msg == null) {
-                    err("The text content of element \u201C" + localName
-                            + "\u201D from namespace \u201C" + uri
-                            + "\u201D was not in the required format.");
+                    err("The text content of element “" + localName
+                            + "” from namespace “" + uri
+                            + "” was not in the required format.");
                 } else {
                     if ("time".equals(localName)) {
                         try {
@@ -163,9 +163,9 @@ public final class TextContentChecker extends Checker {
                         } catch (ClassNotFoundException ce) {
                         }
                     } else {
-                        err("The text content of element \u201C" + localName
-                                // + "\u201D from namespace \u201C" + uri
-                                + "\u201D was not in the required format: "
+                        err("The text content of element “" + localName
+                                // + "” from namespace “" + uri
+                                + "” was not in the required format: "
                                 + msg.split(": ")[1]);
                     }
                 }
@@ -178,14 +178,19 @@ public final class TextContentChecker extends Checker {
             throws SAXException, ClassNotFoundException {
         if (getErrorHandler() != null) {
             Html5DatatypeException ex5 = (Html5DatatypeException) e;
-            String message = "The text content of element \u201c" + localName
-                    + "\u201d was not in the required format: ";
+            String exceptionMessage = e.getMessage().split(": ")[1];
+            String message = "The text content of element “" + localName
+                    + "” was not in the required format: ";
             if (ex5.isWarning()) {
-                message = "Double-check the text content of element \u201c"
-                        + localName + "\u201d: ";
+                if (exceptionMessage.contains("Typo for")) {
+                    message = "";
+                } else {
+                    message = "Double-check the text content of element “"
+                            + localName + "”: ";
+                }
             }
             DatatypeMismatchException dme = new DatatypeMismatchException(
-                    message + e.getMessage().split(": ")[1],
+                    message + exceptionMessage,
                     getDocumentLocator(), datatypeClass, ex5.isWarning());
             getErrorHandler().error(dme);
         }

@@ -31,7 +31,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 import nu.validator.datatype.data.LanguageData;
 
 /**
@@ -117,9 +117,9 @@ public final class Language extends AbstractDatatype {
             if (isDeprecated(literal) && WARN) {
                 throw newDatatypeException("The grandfathered language tag ",
                         literal,
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(literal)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             return;
@@ -127,9 +127,9 @@ public final class Language extends AbstractDatatype {
         if (isRedundant(literal)) {
             if (isDeprecated(literal) && WARN) {
                 throw newDatatypeException("The language tag ", lit.toString(),
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(literal)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             return;
@@ -171,9 +171,9 @@ public final class Language extends AbstractDatatype {
             }
             if (isDeprecatedLang(subtag) && WARN) {
                 throw newDatatypeException("The language subtag ", subtag,
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(subtag)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             i++;
@@ -192,9 +192,9 @@ public final class Language extends AbstractDatatype {
             }
             if (isDeprecatedLang(subtag) && WARN) {
                 throw newDatatypeException("The language subtag ", subtag,
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(subtag)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             i++;
@@ -243,15 +243,16 @@ public final class Language extends AbstractDatatype {
             }
             if (isDeprecated(subtag) && WARN) {
                 throw newDatatypeException("The script subtag ", subtag,
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(subtag)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             if (shouldSuppressScript(subtags[0], subtag)) {
                 throw newDatatypeException(
-                        "Language tag should omit the default script for the"
-                        + " language.");
+                        "IETF BCP 47 language tag should omit the default"
+                                + " script for the language.",
+                        true);
             }
             i++;
             if (i == subtags.length) {
@@ -270,9 +271,9 @@ public final class Language extends AbstractDatatype {
             }
             if (isDeprecated(subtag) && WARN) {
                 throw newDatatypeException("The region subtag ", subtag,
-                        " is deprecated." + " Use \u201C"
+                        " is deprecated." + " Use “"
                                 + preferredValueByLanguageMap.get(subtag)
-                                + "\u201D instead.",
+                                + "” instead.",
                         WARN);
             }
             i++;
@@ -307,9 +308,9 @@ public final class Language extends AbstractDatatype {
                 }
                 if (isDeprecated(subtag) && WARN) {
                     throw newDatatypeException("The variant subtag ", subtag,
-                            " is deprecated." + " Use \u201C"
+                            " is deprecated." + " Use “"
                                     + preferredValueByLanguageMap.get(subtag)
-                                    + "\u201D instead.",
+                                    + "” instead.",
                             WARN);
                 }
                 checkForValidPrefix(subtag, subtags, i);
@@ -361,9 +362,9 @@ public final class Language extends AbstractDatatype {
                     sb.append(" or ");
                 }
             }
-            sb.append("\u201C");
+            sb.append("“");
             sb.append(prefix);
-            sb.append('\u201D');
+            sb.append('”');
             count--;
         }
         throw newDatatypeException("Variant ", subtag,

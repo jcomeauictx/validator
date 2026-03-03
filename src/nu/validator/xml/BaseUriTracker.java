@@ -25,7 +25,7 @@ package nu.validator.xml;
 import java.net.URI;
 import java.util.LinkedList;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 import nu.validator.datatype.Language;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -286,7 +286,7 @@ public class BaseUriTracker implements ContentHandler, UriLangContext {
         try {
             URL base = stack.getLast().currentAbsolute;
             return URL.parse(base, uri).toString();
-        } catch (GalimatiasParseException e) {
+        } catch (GalimatiasParseException | StringIndexOutOfBoundsException e) {
             return null;
         }
     }

@@ -27,13 +27,13 @@ import java.util.Map;
 
 import nu.validator.datatype.Html5DatatypeException;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
-import com.thaiopensource.xml.util.Name;
+import nu.validator.vendor.thaiopensource.xml.util.Name;
 
 /**
  * Encapsulate an error or warning for attribute value with datatype mismatch.
@@ -69,9 +69,9 @@ public class VnuBadAttrValueException extends SAXParseException {
             String attributeName, String attributeValue, String message,
             Locator locator, Class<?> datatypeClass, boolean warning)
             throws SAXException, ClassNotFoundException {
-        super("Bad value \u201c" + attributeValue
-                + "\u201d for attribute \u201c" + attributeName
-                + "\u201d on element \u201c" + elementName + "\u201d: "
+        super("Bad value “" + attributeValue
+                + "” for attribute “" + attributeName
+                + "” on element “" + elementName + "”: "
                 + message, locator);
         Html5DatatypeException ex5 = new Html5DatatypeException(0,
                 datatypeClass, "attribute", message, warning);

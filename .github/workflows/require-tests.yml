@@ -1,0 +1,54 @@
+name: Check that PR includes test changes
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  require-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for “no-tests-needed” label
+        id: label-check
+        run: |
+          LABELS=$(jq -r '[.pull_request.labels[].name] | join(" ")' "$GITHUB_EVENT_PATH")
+          echo "Labels on PR: $LABELS"
+          if echo "$LABELS" | grep -qw "no-tests-needed"; then
+            echo "has_label=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_label=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get list of changed files
+        id: changes
+        run: |
+          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          git fetch origin "$BASE_BRANCH":base
+          CHANGED_FILES=$(git diff --name-only base HEAD)
+          echo "Detected changed files:"
+          echo "$CHANGED_FILES"
+          CHANGED_FILES_LINE=$(echo "$CHANGED_FILES" | tr '\n' ' ')
+          echo "files=$CHANGED_FILES_LINE" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if checker Java code or RNG schema changed but no tests changed
+        if: steps.label-check.outputs.has_label == 'false'
+        env:
+          CHANGED_FILES: ${{ steps.changes.outputs.files }}
+        run: |
+          echo "Checking changed files: $CHANGED_FILES"
+          CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '(^|\s)(schema/|src/nu/validator/checker/)' || true)
+          TESTS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '(^|\s)tests/' || true)
+          if [ -n "$CODE_CHANGED" ] && [ -z "$TESTS_CHANGED" ]; then
+            echo "::error::This PR changes files in schema/ or src/nu/validator/checker/ but not in tests/."
+            echo '::error::If this is intentional, add the label “no-tests-needed” to override this check.'
+            exit 1
+          fi
+
+      - name: Skip check (label override)
+        if: steps.label-check.outputs.has_label == 'true'
+        run: echo '“no-tests-needed” label found — skipping test-requirement check.'

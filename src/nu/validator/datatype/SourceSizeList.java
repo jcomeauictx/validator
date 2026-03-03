@@ -25,7 +25,7 @@ package nu.validator.datatype;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 public class SourceSizeList extends AbstractDatatype {
 
@@ -82,7 +82,7 @@ public class SourceSizeList extends AbstractDatatype {
         LENGTH_UNITS.add("px");
 
         for (CharSequence units : LENGTH_UNITS) {
-            VALID_UNITS.append(" \u201c").append(units).append("\u201d,");
+            VALID_UNITS.append(" “").append(units).append("”,");
         }
         VALID_UNITS.setLength(VALID_UNITS.length() - 1);
     }
@@ -117,8 +117,8 @@ public class SourceSizeList extends AbstractDatatype {
         FUNCTION_NAMES.add("sign");
 
         for (CharSequence name : FUNCTION_NAMES) {
-            VALID_FUNCTION_NAMES.append(" \u201c").append(name).append(
-                    "\u201d,");
+            VALID_FUNCTION_NAMES.append(" “").append(name).append(
+                    "”,");
         }
         VALID_FUNCTION_NAMES.setLength(VALID_FUNCTION_NAMES.length() - 1);
     }
@@ -138,30 +138,77 @@ public class SourceSizeList extends AbstractDatatype {
         if (literal.length() == 0) {
             err("Must not be empty.");
         }
+        // Check if the sizes attribute starts with "auto" (case-insensitive).
+        // Per HTML spec, "auto" can be first entry followed optionally by fallback sizes.
+        CharSequence remaining = checkAndConsumeAutoKeyword(literal);
+        if (remaining == null) {
+            // sizes="auto" with no fallback - valid, context check done elsewhere
+            return;
+        }
         int offset = 0;
         boolean isFirst = true;
         String currentChunk;
         StringBuilder unparsedSize = new StringBuilder();
         StringBuilder extract = new StringBuilder();
-        for (int i = 0; i < literal.length(); i++) {
-            char c = literal.charAt(i);
+        int parenDepth = 0;
+        for (int i = 0; i < remaining.length(); i++) {
+            char c = remaining.charAt(i);
             extract.append(c);
-            if (',' == c) {
-                currentChunk = literal.subSequence(offset, i).toString();
+            if ('(' == c) {
+                parenDepth++;
+            } else if (')' == c) {
+                parenDepth--;
+            } else if (',' == c && parenDepth == 0) {
+                currentChunk = remaining.subSequence(offset, i).toString();
                 checkForInvalidComments(currentChunk, extract);
                 unparsedSize.append(currentChunk);
                 unparsedSize = removeComments(unparsedSize, extract);
-                checkSize(unparsedSize, literal, extract, isFirst, false);
+                checkSize(unparsedSize, remaining, extract, isFirst, false);
                 isFirst = false;
                 unparsedSize.setLength(0);
                 offset = i + 1;
             }
         }
-        currentChunk = literal.subSequence(offset, literal.length()).toString();
+        currentChunk = remaining.subSequence(offset, remaining.length()).toString();
         checkForInvalidComments(currentChunk, extract);
         unparsedSize.append(currentChunk);
         unparsedSize = removeComments(unparsedSize, extract);
-        checkSize(unparsedSize, literal, extract, isFirst, true);
+        checkSize(unparsedSize, remaining, extract, isFirst, true);
+    }
+
+    /**
+     * Checks if literal starts with "auto" keyword (case-insensitive).
+     * If so, returns remaining content after "auto," or null if just "auto".
+     * If it doesn't start with "auto", returns the original literal unchanged.
+     */
+    private CharSequence checkAndConsumeAutoKeyword(CharSequence literal) {
+        // Trim leading whitespace
+        int start = 0;
+        while (start < literal.length() && isWhitespace(literal.charAt(start))) {
+            start++;
+        }
+        // Check if starts with "auto" (case-insensitive)
+        if (literal.length() - start >= 4
+                && (literal.charAt(start) == 'a' || literal.charAt(start) == 'A')
+                && (literal.charAt(start + 1) == 'u' || literal.charAt(start + 1) == 'U')
+                && (literal.charAt(start + 2) == 't' || literal.charAt(start + 2) == 'T')
+                && (literal.charAt(start + 3) == 'o' || literal.charAt(start + 3) == 'O')) {
+            int afterAuto = start + 4;
+            // Skip trailing whitespace after "auto"
+            while (afterAuto < literal.length() && isWhitespace(literal.charAt(afterAuto))) {
+                afterAuto++;
+            }
+            if (afterAuto == literal.length()) {
+                // Just "auto" with optional whitespace - valid
+                return null;
+            }
+            if (literal.charAt(afterAuto) == ',') {
+                // "auto," followed by fallback sizes - return the rest
+                return literal.subSequence(afterAuto + 1, literal.length());
+            }
+        }
+        // Doesn't start with "auto" keyword, return original
+        return literal;
     }
 
     private void checkSize(StringBuilder unparsedSize, CharSequence literal,
@@ -464,7 +511,7 @@ public class SourceSizeList extends AbstractDatatype {
     }
 
     private CharSequence code(CharSequence cs) {
-        return "\u201c" + cs + "\u201d";
+        return "“" + cs + "”";
     }
 
     @Override

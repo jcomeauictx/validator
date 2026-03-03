@@ -1,7 +1,6 @@
-`vnu.jar` is a packaged version of the Nu Html Checker for batch-checking
-documents from the command line and from other scripts/apps.
+# vnu-jar: Check HTML from JavaScript
 
-You can work with `vnu.jar` in CommonJS modules.
+`vnu-jar` lets you use the Nu Html Checker (vnu) from within JavaScript code — to catch unintended mistakes in HTML, CSS, and SVG content.
 
 ## Install latest release version
 
@@ -9,30 +8,34 @@ You can work with `vnu.jar` in CommonJS modules.
 npm install --save vnu-jar
 ```
 
-## Install 'next' version
-
-```sh
-npm install --save vnu-jar@next
-```
-
 ## Example
+
+Here’s an example of how to create a simple `vnu-check.js` program that uses the `vnu-jar` package to invoke the Nu Html Checker (vnu), pass it whatever arguments the user specifies, and then emit the checker output.
 
 ```js
 'use strict';
-
-const { execFile } = require('child_process');
-const vnu = require('vnu-jar');
-
-// Print path to vnu.jar
-console.log(vnu);
-
-// Work with vnu.jar, for example get vnu.jar version
-execFile('java', ['-jar', `"${vnu}"`, '--version'], { shell: true }, (error, stdout) => {
-    if (error) {
-        console.error(`exec error: ${error}`);
-        return;
+const { vnu } = require('vnu-jar');
+(async () => {
+    try {
+        console.log(await vnu.check(process.argv.slice(2)));
+    } catch (err) {
+        console.error(err.message.trim());
+        process.exit(1);
     }
-
-    console.log(stdout);
-});
+})();
 ```
+
+## Command-line usage
+
+When installed or run via `npx`, the package also provides a `vnu` command that causes the `vnu.jar` program to be invoked and run with whatever arguments you specify:
+
+```sh
+npx vnu --verbose file1.html file2.html
+npx vnu --help
+```
+
+## Java auto-installation
+
+This npm package includes the `vnu.jar` Java program — so to use the package, users will additionally need a Java environment that provides a `java` command.
+
+For that reason, the package runs a `postinstall` script which — if it finds no `java` command in the user’s environment during install — will then _automatically_ install a (Node.js-local) Java runtime environment, in `node_modules/.cache/vnu-jar/java/`).

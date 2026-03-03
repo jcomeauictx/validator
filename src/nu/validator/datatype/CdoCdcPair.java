@@ -22,7 +22,7 @@
 
 package nu.validator.datatype;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
 public class CdoCdcPair extends AbstractDatatype {
 
@@ -100,8 +100,8 @@ public class CdoCdcPair extends AbstractDatatype {
         }
         if (state == State.HAS_CDO) {
             throw newDatatypeException(
-                    "Content contains the character sequence \u201c<!--\u201d without"
-                            + " a later occurrence of the character sequence \u201c-->\u201d.");
+                    "Content contains the character sequence “<!--” without"
+                            + " a later occurrence of the character sequence “-->”.");
         }
     }
 

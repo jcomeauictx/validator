@@ -23,11 +23,11 @@
 
 package nu.validator.datatype;
 
-import org.relaxng.datatype.Datatype;
-import org.relaxng.datatype.DatatypeBuilder;
-import org.relaxng.datatype.DatatypeException;
-import org.relaxng.datatype.DatatypeLibrary;
-import org.relaxng.datatype.helpers.ParameterlessDatatypeBuilder;
+import nu.validator.vendor.relaxng.datatype.Datatype;
+import nu.validator.vendor.relaxng.datatype.DatatypeBuilder;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeLibrary;
+import nu.validator.vendor.relaxng.datatype.helpers.ParameterlessDatatypeBuilder;
 
 /**
  * Factory for HTML5 datatypes.
@@ -154,6 +154,8 @@ public class Html5DatatypeLibrary implements DatatypeLibrary {
             return Zero.THE_INSTANCE;
         } else if ("script-documentation".equals(typeLocalName)) {
             return ScriptDocumentation.THE_INSTANCE;
+        } else if ("rel-value".equals(typeLocalName)) {
+            return RelValue.THE_INSTANCE;
         } else if ("non-empty-string".equals(typeLocalName)) {
             return NonEmptyString.THE_INSTANCE;
         } else if ("string-without-line-breaks".equals(typeLocalName)) {

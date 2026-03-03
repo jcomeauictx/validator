@@ -22,13 +22,9 @@
 
 package nu.validator.datatype;
 
-import java.util.ArrayList;
-import java.util.List;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 
-import org.relaxng.datatype.DatatypeException;
-
-import com.shapesecurity.salvation.Parser;
-import com.shapesecurity.salvation.data.Notice;
+import org.htmlunit.csp.Policy;
 
 public class ContentSecurityPolicy extends AbstractDatatype {
 
@@ -37,7 +33,7 @@ public class ContentSecurityPolicy extends AbstractDatatype {
      */
     public static final ContentSecurityPolicy THE_INSTANCE = new ContentSecurityPolicy();
 
-    private static final String DIRECTIVE_NAME = " ("
+    private static final String DIRECTIVE_NAME = " \\b("
             + "child-src|connect-src|default-src|font-src|frame-src|img-src"
             + "|manifest-src|media-src|object-src|prefetch-src|script-src"
             + "|style-src|worker-src|allow|options|referrer|report-uri"
@@ -60,35 +56,71 @@ public class ContentSecurityPolicy extends AbstractDatatype {
 
     @Override
     public void checkValid(CharSequence literal) throws DatatypeException {
-        List<Notice> notices = new ArrayList<>();
         StringBuilder errors = new StringBuilder();
         StringBuilder warnings = new StringBuilder();
         StringBuilder others = new StringBuilder();
-        Parser.parse(literal.toString(), "http://example.org", notices);
-        if (!notices.isEmpty()) {
-            for (Notice notice : notices) {
-                if (notice.show().contains("experimental directive")) {
-                    continue;
-                }
-                String message = notice.show().replaceAll(DIRECTIVE_NAME,
-                        " \u201c$1\u201d ").replaceAll(SANDBOX_KEYWORDS,
-                                "\u201c$1\u201d")
-                        + " ";
-                if (notice.isError()) {
-                    errors.append(message);
-                } else if (notice.isWarning()) {
-                    warnings.append(message);
-                } else if (notice.isInfo()) {
-                    others.append(message);
-                }
+        String policyText = literal.toString()
+                .replace("allow-downloads", "")
+                .replace("allow-presentation", "");
+        try {
+            if (policyText.contains(",")) {
+                Policy.parseSerializedCSPList(policyText,
+                        (severity, message, policyIndex, directiveIndex,
+                                valueIndex) -> {
+                            if (message.contains("experimental directive")) {
+                                return;
+                            }
+                            String formattedMessage = message
+                                .replaceAll(SANDBOX_KEYWORDS, "“$1”")
+                                .replaceAll(DIRECTIVE_NAME, " “$1” ")
+                                    + " ";
+                            switch (severity) {
+                                case Error:
+                                    errors.append(formattedMessage);
+                                    break;
+                                case Warning:
+                                    warnings.append(formattedMessage);
+                                    break;
+                                case Info:
+                                    others.append(formattedMessage);
+                                    break;
+                            }
+                        });
+            } else {
+                Policy.parseSerializedCSP(policyText,
+                        (severity, message, directiveIndex, valueIndex) -> {
+                            if (message.contains("experimental directive")) {
+                                return;
+                            }
+                            String formattedMessage = message
+                                .replaceAll(SANDBOX_KEYWORDS, "“$1”")
+                                .replaceAll(DIRECTIVE_NAME, " “$1” ")
+                                    + " ";
+                            switch (severity) {
+                                case Error:
+                                    errors.append(formattedMessage);
+                                    break;
+                                case Warning:
+                                    warnings.append(formattedMessage);
+                                    break;
+                                case Info:
+                                    others.append(formattedMessage);
+                                    break;
+                            }
+                        });
             }
-            if (errors.length() > 0) {
-                throw newDatatypeException(errors.toString());
-            } else if (warnings.length() > 0) {
-                throw newDatatypeException(warnings.toString(), WARN);
-            } else if (others.length() > 0) {
-                throw newDatatypeException(others.toString(), WARN);
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().startsWith("string is not ascii")) {
+                throw newDatatypeException("Content Security Policy must contain only ASCII characters.");
             }
+            throw newDatatypeException(e.getMessage());
+        }
+        if (errors.length() > 0) {
+            throw newDatatypeException(errors.toString());
+        } else if (warnings.length() > 0) {
+            throw newDatatypeException(warnings.toString(), WARN);
+        } else if (others.length() > 0) {
+            throw newDatatypeException(others.toString(), WARN);
         }
     }
 

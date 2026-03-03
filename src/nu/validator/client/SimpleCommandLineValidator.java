@@ -31,9 +31,9 @@ import java.io.InputStreamReader;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
-import java.net.URL;
-import java.util.Enumeration;
-import java.util.jar.Manifest;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
 import java.util.regex.Pattern;
 
 import nu.validator.htmlparser.sax.XmlSerializer;
@@ -59,8 +59,6 @@ import org.xml.sax.SAXParseException;
  */
 public class SimpleCommandLineValidator {
 
-    private static String version;
-
     private static String userAgent;
 
     private static SimpleDocumentValidator validator;
@@ -76,6 +74,8 @@ public class SimpleCommandLineValidator {
     private static boolean verbose;
 
     private static boolean errorsOnly;
+
+    private static boolean skipInfoMessages;
 
     private static boolean wError;
 
@@ -119,22 +119,25 @@ public class SimpleCommandLineValidator {
 
     private static boolean hasSchemaOption;
 
-    public static void main(String[] args) throws SAXException, Exception {
-        Enumeration<URL> resources = SimpleCommandLineValidator.class. //
-                getClassLoader().getResources("META-INF/MANIFEST.MF");
-        while (resources.hasMoreElements()) {
-            try (InputStream is = resources.nextElement().openStream()) {
-                version = new Manifest(is).getMainAttributes() //
-                        .getValue("Implementation-Version");
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
+    private static Map<String, String> additionalRequestHeaders = new HashMap<>();
+
+    private static Properties props = new Properties();
+
+    static {
+        try {
+            props.load(SimpleDocumentValidator.class.getClassLoader().getResourceAsStream(
+                    "nu/validator/localentities/files/misc.properties"));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
+    }
+    public static void main(String[] args) throws SAXException, Exception {
         out = System.err;
         otherOut = System.out;
         userAgent = "Validator.nu/LV";
         System.setProperty("nu.validator.datatype.warn", "true");
         errorsOnly = false;
+        skipInfoMessages = false;
         wError = false;
         alsoCheckCSS = false;
         skipNonCSS = false;
@@ -174,10 +177,13 @@ public class SimpleCommandLineValidator {
                 fileArgsStart = i;
                 break;
             } else {
-                if ("--verbose".equals(args[i])) {
-                    verbose = true;
+                 if ("--asciiquotes".equals(args[i])) {
+                    asciiQuotes = true;
                 } else if ("--errors-only".equals(args[i])) {
                     errorsOnly = true;
+                    System.setProperty("nu.validator.datatype.warn", "false");
+                } else if ("--skip-info-messages".equals(args[i])) {
+                    skipInfoMessages = true;
                     System.setProperty("nu.validator.datatype.warn", "false");
                 } else if ("--Werror".equals(args[i])) {
                     wError = true;
@@ -186,8 +192,6 @@ public class SimpleCommandLineValidator {
                 } else if ("--stdout".equals(args[i])) {
                     out = System.out;
                     otherOut = System.err;
-                } else if ("--asciiquotes".equals(args[i])) {
-                    asciiQuotes = true;
                 } else if ("--filterfile".equals(args[i])) {
                     File filterFile = new File(args[++i]);
                     StringBuilder sb = new StringBuilder();
@@ -227,26 +231,13 @@ public class SimpleCommandLineValidator {
                     }
                 } else if ("--format".equals(args[i])) {
                     outFormat = args[++i];
-                } else if ("--user-agent".equals(args[i])) {
-                    userAgent = args[++i];
-                } else if ("--version".equals(args[i])) {
-                    if (version != null) {
-                        otherOut.println(version);
-                    } else {
-                        otherOut.println("[unknown version]");
-                    }
-                    System.exit(0);
                 } else if ("--help".equals(args[i])) {
                     help();
                     System.exit(0);
-                } else if ("--also-check-css".equals(args[i])) {
-                    alsoCheckCSS = true;
                 } else if ("--skip-non-css".equals(args[i])) {
                     skipNonCSS = true;
                 } else if ("--css".equals(args[i])) {
                     forceCSS = true;
-                } else if ("--also-check-svg".equals(args[i])) {
-                    alsoCheckSVG = true;
                 } else if ("--skip-non-svg".equals(args[i])) {
                     skipNonSVG = true;
                 } else if ("--svg".equals(args[i])) {
@@ -257,20 +248,50 @@ public class SimpleCommandLineValidator {
                     forceHTML = true;
                 } else if ("--xml".equals(args[i])) {
                     forceXML = true;
-                } else if ("--entities".equals(args[i])) {
-                    loadEntities = true;
+                } else if ("--also-check-css".equals(args[i])) {
+                    alsoCheckCSS = true;
+                } else if ("--also-check-svg".equals(args[i])) {
+                    alsoCheckSVG = true;
+                } else if ("--user-agent".equals(args[i])) {
+                    userAgent = args[++i];
                 } else if ("--no-langdetect".equals(args[i])) {
                     noLangDetect = true;
                 } else if ("--no-stream".equals(args[i])) {
                     noStream = true;
+                } else if ("--verbose".equals(args[i])) {
+                    verbose = true;
+                } else if ("--version".equals(args[i])) {
+                    version();
+                    System.exit(0);
+                } else if ("--entities".equals(args[i])) {
+                    loadEntities = true;
                 } else if ("--schema".equals(args[i])) {
                     hasSchemaOption = true;
                     schemaUrl = args[++i];
-                    if (!schemaUrl.startsWith("http:")) {
+                    if (!schemaUrl.startsWith("http:")
+                            && !schemaUrl.startsWith("https:")
+                            && !schemaUrl.startsWith("file:")) {
                         System.err.println("error: The \"--schema\" option"
                                 + " requires a URL for a schema.");
                         System.exit(1);
                     }
+                } else if ("--additional-request-header".equals(args[i])) {
+                    String headerValue = args[++i];
+                    int colonIndex = headerValue.indexOf(':');
+                    if (colonIndex == -1) {
+                        System.err.println("error: The"
+                                + " \"--additional-request-header\" option"
+                                + " requires a header in the format"
+                                + " \"Name: Value\".");
+                        System.exit(1);
+                    }
+                    String headerName = headerValue.substring(0, colonIndex).trim();
+                    String headerVal = headerValue.substring(colonIndex + 1).trim();
+                    if (headerName.isEmpty()) {
+                        System.err.println("error: Header name cannot be empty.");
+                        System.exit(1);
+                    }
+                    additionalRequestHeaders.put(headerName, headerVal);
                 }
             }
         }
@@ -376,22 +397,10 @@ public class SimpleCommandLineValidator {
             if (args[i].startsWith("http://") || args[i].startsWith("https://")) {
                 emitFilename(args[i]);
                 try {
-                    validator.checkHttpURL(args[i], userAgent, errorHandler);
+                    validator.checkHttpURL(args[i], userAgent, errorHandler,
+                            additionalRequestHeaders.isEmpty() ? null
+                                    : additionalRequestHeaders);
                 } catch (IOException e) {
-                    if (e.getCause() instanceof //
-                            org.apache.http.TruncatedChunkException) {
-                        continue;
-                    } else if (e.getCause() instanceof //
-                            org.apache.http.MalformedChunkCodingException
-                            && (e.getMessage().contains(
-                                    "CRLF expected at end of chunk"))) {
-                        continue;
-                    } else if (e.getCause() instanceof //
-                            org.apache.http.ConnectionClosedException
-                            && (e.getMessage().contains(
-                                    "closing chunk expected"))) {
-                        continue;
-                    }
                     errorHandler.fatalError(new SAXParseException(e.getMessage(),
                             null, args[i], -1, -1,
                             new SystemIdIOException(args[i], e.getMessage())));
@@ -616,50 +625,27 @@ public class SimpleCommandLineValidator {
             errorHandler = new MessageEmitterAdapter(filterPattern, sourceCode,
                     showSource, imageCollector, lineOffset, true,
                     new JsonMessageEmitter(
-                            new nu.validator.json.Serializer(out), callback,
-                            asciiQuotes));
+                        new nu.validator.json.Serializer(out), callback,
+                        asciiQuotes, props.getProperty("nu.validator.servlet.version",
+                            "[unknown version]")));
         } else {
             throw new RuntimeException("Bug. Should be unreachable.");
         }
         errorHandler.setErrorsOnly(errorsOnly);
+        errorHandler.setSkipInfoMessages(skipInfoMessages);
     }
 
     private static void usage() {
-        otherOut.println("Usage:");
-        otherOut.println("");
-        otherOut.println("    vnu-runtime-image/bin/vnu OPTIONS FILES (Linux or macOS)");
-        otherOut.println("    vnu-runtime-image\\bin\\vnu.bat OPTIONS FILES (Windows)");
-        otherOut.println("    java -jar ~/vnu.jar OPTIONS FILES (any system with Java8+ installed)");
-        otherOut.println("");
-        otherOut.println("...where FILES are the documents to check, and OPTIONS are zero or more of:");
-        otherOut.println("");
-        otherOut.println("    --errors-only --Werror --exit-zero-always --stdout --asciiquotes");
-        otherOut.println("    --user-agent USER_AGENT --no-langdetect --no-stream --filterfile FILENAME");
-        otherOut.println("    --filterpattern PATTERN --css --skip-non-css --also-check-css --svg");
-        otherOut.println("    --skip-non-svg --also-check-svg --xml --html --skip-non-html");
-        otherOut.println("    --format gnu|xml|json|text --help --verbose --version");
-        otherOut.println("");
-        otherOut.println("For detailed usage information, try the \"--help\" option or see:");
-        otherOut.println("");
-        otherOut.println("  https://validator.github.io/validator/");
-        otherOut.println("");
-        otherOut.println("To read from stdin, use \"-\" as the filename, like this: \"java -jar vnu.jar - \".");
-        otherOut.println("");
-        otherOut.println("To run the checker as a standalone Web-based service, open a new terminal");
-        otherOut.println("window and invoke the checker like this");
-        otherOut.println("");
-        otherOut.println("    java -cp vnu.jar nu.validator.servlet.Main 8888");
-        otherOut.println("    vnu-runtime-image/bin/java nu.validator.servlet.Main 8888");
-        otherOut.println("    vnu-runtime-image\\bin\\java -cp vnu.jar nu.validator.servlet.Main 8888");
-        otherOut.println("");
-        otherOut.println("...then open http://127.0.0.1:8888 in a browser.");
-        otherOut.println("");
-        otherOut.println("After that, to check documents locally using the packaged HTTP client, do this:");
-        otherOut.println("");
-        otherOut.println("    java -cp vnu.jar nu.validator.client.HttpClient FILES");
-        otherOut.println("    vnu-runtime-image/bin/java nu.validator.client.HttpClient FILES");
-        otherOut.println("    vnu-runtime-image\\bin\\java nu.validator.client.HttpClient FILES");
-        otherOut.println("");
+        try (InputStream help = SimpleCommandLineValidator.class.getClassLoader().getResourceAsStream(
+                "nu/validator/localentities/files/usage")) {
+            otherOut.println("");
+            for (int b = help.read(); b != -1; b = help.read()) {
+                otherOut.write(b);
+            }
+            otherOut.flush();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void help() {
@@ -669,8 +655,15 @@ public class SimpleCommandLineValidator {
             for (int b = help.read(); b != -1; b = help.read()) {
                 otherOut.write(b);
             }
+            otherOut.flush();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static void version() {
+        otherOut.println(props.getProperty("nu.validator.servlet.version",
+                    "[unknown version]"));
+        otherOut.flush();
     }
 }

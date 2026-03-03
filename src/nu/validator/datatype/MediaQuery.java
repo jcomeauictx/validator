@@ -24,7 +24,7 @@ package nu.validator.datatype;
 
 import java.io.StringReader;
 
-import org.relaxng.datatype.DatatypeException;
+import nu.validator.vendor.relaxng.datatype.DatatypeException;
 import org.w3c.css.css.StyleSheetParser;
 import org.w3c.css.parser.CssError;
 import org.w3c.css.parser.CssParseException;
@@ -76,7 +76,7 @@ public class MediaQuery extends AbstractDatatype {
                     cssMessage = "Parse Error";
                 }
                 if (cpe.getProperty() != null) {
-                    cssProperty = String.format("\u201c%s\u201D: ",
+                    cssProperty = String.format("“%s”: ",
                             cpe.getProperty());
                 }
                 if (cpe.getMessage() != null) {

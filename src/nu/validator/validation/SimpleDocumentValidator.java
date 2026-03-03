@@ -25,20 +25,28 @@ package nu.validator.validation;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.SequenceInputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import nu.validator.checker.jing.CheckerSchema;
 import nu.validator.checker.jing.CheckerValidator;
 import nu.validator.checker.table.TableChecker;
-import nu.validator.checker.ConformingButObsoleteWarner;
+import nu.validator.checker.CspEnforcementChecker;
+import nu.validator.checker.DuplicateDtChecker;
+import nu.validator.checker.HeadingHierarchyChecker;
 import nu.validator.checker.MicrodataChecker;
 import nu.validator.checker.NormalizationChecker;
+import nu.validator.checker.SpeculationRulesChecker;
 import nu.validator.checker.TextContentChecker;
 import nu.validator.checker.UncheckedSubtreeWarner;
-import nu.validator.checker.UnsupportedFeatureChecker;
 import nu.validator.checker.UsemapChecker;
 import nu.validator.checker.XmlPiChecker;
 import nu.validator.gnu.xml.aelfred2.FatalSAXException;
@@ -59,6 +67,7 @@ import nu.validator.xml.NullEntityResolver;
 import nu.validator.xml.PrudentHttpEntityResolver;
 import nu.validator.xml.PrudentHttpEntityResolver.ResourceNotRetrievableException;
 import nu.validator.xml.TypedInputSource;
+import nu.validator.xml.AttributesPermutingXMLReaderWrapper;
 import nu.validator.xml.WiretapXMLReaderWrapper;
 
 import org.xml.sax.ContentHandler;
@@ -69,17 +78,17 @@ import org.xml.sax.SAXParseException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.ext.LexicalHandler;
 
-import com.thaiopensource.relaxng.impl.CombineValidator;
-import com.thaiopensource.util.PropertyMap;
-import com.thaiopensource.util.PropertyMapBuilder;
-import com.thaiopensource.validate.Schema;
-import com.thaiopensource.validate.SchemaReader;
-import com.thaiopensource.validate.ValidateProperty;
-import com.thaiopensource.validate.Validator;
-import com.thaiopensource.validate.auto.AutoSchemaReader;
-import com.thaiopensource.validate.prop.rng.RngProperty;
-import com.thaiopensource.validate.rng.CompactSchemaReader;
-import com.thaiopensource.xml.sax.Jaxp11XMLReaderCreator;
+import nu.validator.vendor.thaiopensource.relaxng.impl.CombineValidator;
+import nu.validator.vendor.thaiopensource.util.PropertyMap;
+import nu.validator.vendor.thaiopensource.util.PropertyMapBuilder;
+import nu.validator.vendor.thaiopensource.validate.Schema;
+import nu.validator.vendor.thaiopensource.validate.SchemaReader;
+import nu.validator.vendor.thaiopensource.validate.ValidateProperty;
+import nu.validator.vendor.thaiopensource.validate.Validator;
+import nu.validator.vendor.thaiopensource.validate.auto.AutoSchemaReader;
+import nu.validator.vendor.thaiopensource.validate.prop.rng.RngProperty;
+import nu.validator.vendor.thaiopensource.validate.rng.CompactSchemaReader;
+import nu.validator.vendor.thaiopensource.xml.sax.Jaxp11XMLReaderCreator;
 
 import org.apache.log4j.PropertyConfigurator;
 
@@ -144,8 +153,36 @@ public class SimpleDocumentValidator {
         PropertyMap jingPropertyMap = pmb.toPropertyMap();
 
         try {
-            TypedInputSource schemaInput = (TypedInputSource) entityResolver.resolveEntity(
-                    null, schemaUrl);
+            InputSource resolvedInput = entityResolver.resolveEntity(null, schemaUrl);
+            TypedInputSource schemaInput;
+
+            if (resolvedInput instanceof TypedInputSource) {
+                schemaInput = (TypedInputSource) resolvedInput;
+            } else {
+                if (schemaUrl.startsWith("http://") || schemaUrl.startsWith("https://")) {
+                    PrudentHttpEntityResolver httpResolver = 
+                        new PrudentHttpEntityResolver(-1, true, errorHandler);
+                    httpResolver.setAllowRnc(true);
+                    httpResolver.setAllowGenericXml(true);
+                    schemaInput = (TypedInputSource) httpResolver.resolveEntity(null, schemaUrl);
+                } else if (schemaUrl.startsWith("file:")) {
+                    schemaInput = new TypedInputSource();
+                    java.net.URL url = new java.net.URL(schemaUrl);
+                    schemaInput.setByteStream(url.openStream());
+                    schemaInput.setSystemId(schemaUrl);
+                    if (schemaUrl.endsWith(".rnc")) {
+                        schemaInput.setType("application/relax-ng-compact-syntax");
+                    } else if (schemaUrl.endsWith(".rng")) {
+                        schemaInput.setType("application/xml");
+                    } else {
+                        schemaInput.setType("application/xml");
+                    }
+                } else {
+                    throw new SchemaReadException(String.format(
+                            "Failed to resolve schema URL \"%s\".", schemaUrl));
+                }
+            }
+
             SchemaReader sr;
             if ("application/relax-ng-compact-syntax".equals(schemaInput.getType())) {
                 sr = CompactSchemaReader.getInstance();
@@ -156,6 +193,9 @@ public class SimpleDocumentValidator {
         } catch (ClassCastException e) {
             throw new SchemaReadException(String.format(
                     "Failed to resolve schema URL \"%s\".", schemaUrl));
+        } catch (ResourceNotRetrievableException e) {
+            throw new SchemaReadException(String.format(
+                    "Failed to retrieve schema from URL \"%s\".", schemaUrl));
         }
     }
 
@@ -280,6 +320,8 @@ public class SimpleDocumentValidator {
             } else {
                 System.setProperty("nu.validator.schema.rdfa-full", "0");
             }
+        } else if (schemaUrl.contains("svg")) {
+            schema = new RoleAttributeFilteringSchemaWrapper(schema);
         }
         this.mainSchemaUrl = schemaUrl;
         this.mainSchema = schema;
@@ -316,21 +358,25 @@ public class SimpleDocumentValidator {
             validator = new CombineValidator(validator, new CheckerValidator(
                     new TableChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
-                    new ConformingButObsoleteWarner(), jingPropertyMap));
+                    new DuplicateDtChecker(), jingPropertyMap));
+            validator = new CombineValidator(validator, new CheckerValidator(
+                    new HeadingHierarchyChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
                     new MicrodataChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
                     new NormalizationChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
+                    new SpeculationRulesChecker(), jingPropertyMap));
+            validator = new CombineValidator(validator, new CheckerValidator(
                     new TextContentChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
                     new UncheckedSubtreeWarner(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
-                    new UnsupportedFeatureChecker(), jingPropertyMap));
-            validator = new CombineValidator(validator, new CheckerValidator(
                     new UsemapChecker(), jingPropertyMap));
             validator = new CombineValidator(validator, new CheckerValidator(
                     new XmlPiChecker(), jingPropertyMap));
+            validator = new CombineValidator(validator, new CheckerValidator(
+                    new CspEnforcementChecker(), jingPropertyMap));
         }
 
         HtmlParser htmlParser = new HtmlParser();
@@ -355,17 +401,21 @@ public class SimpleDocumentValidator {
         HashMap<String, String> profileMap = new HashMap<>();
         profileMap.put("html-strict", "warn");
         htmlParser.setErrorProfile(profileMap);
-        htmlReader = getWiretap(htmlParser);
+        XMLReader permutingHtmlReader = new AttributesPermutingXMLReaderWrapper(
+                htmlParser); // improves RNG validation error messages
+        htmlReader = getWiretap(permutingHtmlReader);
         xmlParser = new SAXDriver();
         xmlParser.setContentHandler(validator.getContentHandler());
+        xmlParser.setErrorHandler(docValidationErrHandler);
         if (lexicalHandler != null) {
             xmlParser.setProperty(
                     "http://xml.org/sax/properties/lexical-handler",
                     lexicalHandler);
         }
         xmlReader = new IdFilter(xmlParser);
-        xmlReader.setFeature("http://xml.org/sax/features/string-interning", true);
         xmlReader.setContentHandler(validator.getContentHandler());
+        xmlReader.setErrorHandler(xmlParser.getErrorHandler());
+        xmlReader.setFeature("http://xml.org/sax/features/string-interning", true);
         xmlReader.setFeature(
                 "http://xml.org/sax/features/unicode-normalization-checking",
                 true);
@@ -380,8 +430,7 @@ public class SimpleDocumentValidator {
                     false);
             xmlReader.setEntityResolver(new NullEntityResolver());
         }
-        xmlReader = getWiretap(xmlParser);
-        xmlParser.setErrorHandler(docValidationErrHandler);
+        xmlReader = getWiretap(xmlReader);
         xmlParser.lockErrorHandler();
     }
 
@@ -475,6 +524,12 @@ public class SimpleDocumentValidator {
     public void checkHttpURL(String document, String userAgent,
             ErrorHandler errorHandler)
             throws IOException, SAXException {
+        checkHttpURL(document, userAgent, errorHandler, null);
+    }
+
+    public void checkHttpURL(String document, String userAgent,
+            ErrorHandler errorHandler, Map<String, String> additionalHeaders)
+            throws IOException, SAXException {
         CookieHandler.setDefault(
                 new CookieManager(null, CookiePolicy.ACCEPT_ALL));
         validator.reset();
@@ -484,6 +539,9 @@ public class SimpleDocumentValidator {
         }
         httpRes.setAllowHtml(true);
         httpRes.setUserAgent(userAgent);
+        if (additionalHeaders != null && !additionalHeaders.isEmpty()) {
+            httpRes.setAdditionalRequestHeaders(additionalHeaders);
+        }
         try {
             documentInput = (TypedInputSource) httpRes.resolveEntity(null,
                     document);
@@ -516,7 +574,7 @@ public class SimpleDocumentValidator {
         }
         List<InputStream> streamsList = new ArrayList<>();
         streamsList.add(new ByteArrayInputStream(CSS_CHECKING_PROLOG));
-        streamsList.add(is.getByteStream());
+        streamsList.add(new BOMStripperInputStream(is.getByteStream()));
         streamsList.add(new ByteArrayInputStream(CSS_CHECKING_EPILOG));
         Enumeration<InputStream> streams = Collections.enumeration(streamsList);
         is.setByteStream(new SequenceInputStream(streams));
@@ -550,6 +608,69 @@ public class SimpleDocumentValidator {
             xmlReader.parse(is);
         } catch (SAXParseException e) {
         } catch (FatalSAXException e) {
+        }
+    }
+
+    private static class BOMStripperInputStream extends FilterInputStream {
+        private boolean firstRead = true;
+        private byte[] buffer = null;
+        private int bufferPos = 0;
+        private int bufferLen = 0;
+
+        protected BOMStripperInputStream(InputStream in) {
+            super(in);
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (firstRead) {
+                firstRead = false;
+                checkAndSkipBOM();
+            }
+            if (buffer != null && bufferPos < bufferLen) {
+                return buffer[bufferPos++] & 0xFF;
+            }
+            return super.read();
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (firstRead) {
+                firstRead = false;
+                checkAndSkipBOM();
+            }
+            if (buffer != null && bufferPos < bufferLen) {
+                int bytesToCopy = Math.min(len, bufferLen - bufferPos);
+                System.arraycopy(buffer, bufferPos, b, off, bytesToCopy);
+                bufferPos += bytesToCopy;
+                if (bytesToCopy == len) {
+                    return bytesToCopy;
+                }
+                int additionalBytes = super.read(b, off + bytesToCopy, len - bytesToCopy);
+                if (additionalBytes > 0) {
+                    return bytesToCopy + additionalBytes;
+                }
+                return bytesToCopy;
+            }
+            return super.read(b, off, len);
+        }
+
+        private void checkAndSkipBOM() throws IOException {
+            byte[] bom = new byte[3];
+            int bytesRead = super.read(bom, 0, 3);
+            
+            if (bytesRead >= 3 && bom[0] == (byte)0xEF && 
+                bom[1] == (byte)0xBB && bom[2] == (byte)0xBF) {
+                // BOM found, skip it
+                return;
+            }
+            
+            // No BOM, save the bytes we read to return later
+            if (bytesRead > 0) {
+                buffer = bom;
+                bufferPos = 0;
+                bufferLen = bytesRead;
+            }
         }
     }
 

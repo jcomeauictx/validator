@@ -22,6 +22,7 @@
 
 package nu.validator.xml.roleattributes;
 
+import nu.validator.checker.InfoAwareErrorHandler;
 import nu.validator.xml.AttributesImpl;
 
 import org.xml.sax.Attributes;
@@ -31,9 +32,11 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class RoleAttributeFilteringContentHandlerWrapper
         implements ContentHandler {
@@ -45,7 +48,9 @@ public class RoleAttributeFilteringContentHandlerWrapper
     private Locator locator = null;
 
     /**
-     * @param delegate
+     * @param delegate the underlying ContentHandler to which events will be delegated
+     * @param errorHandler the ErrorHandler to which validation errors will be reported,
+     *            or null if error reporting is not needed
      */
     public RoleAttributeFilteringContentHandlerWrapper(ContentHandler delegate,
             ErrorHandler errorHandler) {
@@ -54,16 +59,16 @@ public class RoleAttributeFilteringContentHandlerWrapper
     }
 
     /**
-     * @param arg0
-     * @param arg1
-     * @param arg2
+     * @param chars
+     * @param start
+     * @param length
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#characters(char[], int, int)
      */
     @Override
-    public void characters(char[] arg0, int arg1, int arg2)
+    public void characters(char[] chars, int start, int length)
             throws SAXException {
-        delegate.characters(arg0, arg1, arg2);
+        delegate.characters(chars, start, length);
     }
 
     /**
@@ -76,73 +81,73 @@ public class RoleAttributeFilteringContentHandlerWrapper
     }
 
     /**
-     * @param arg0
-     * @param arg1
-     * @param arg2
+     * @param namespaceURI
+     * @param localName
+     * @param qName
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#endElement(java.lang.String,
      *      java.lang.String, java.lang.String)
      */
     @Override
-    public void endElement(String arg0, String arg1, String arg2)
+    public void endElement(String namespaceURI, String localName, String qName)
             throws SAXException {
-        delegate.endElement(arg0, arg1, arg2);
+        delegate.endElement(namespaceURI, localName, qName);
     }
 
     /**
-     * @param arg0
+     * @param prefix
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#endPrefixMapping(java.lang.String)
      */
     @Override
-    public void endPrefixMapping(String arg0) throws SAXException {
-        delegate.endPrefixMapping(arg0);
+    public void endPrefixMapping(String prefix) throws SAXException {
+        delegate.endPrefixMapping(prefix);
     }
 
     /**
-     * @param arg0
-     * @param arg1
-     * @param arg2
+     * @param ch
+     * @param start
+     * @param length
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#ignorableWhitespace(char[], int, int)
      */
     @Override
-    public void ignorableWhitespace(char[] arg0, int arg1, int arg2)
+    public void ignorableWhitespace(char[] ch, int start, int length)
             throws SAXException {
-        delegate.ignorableWhitespace(arg0, arg1, arg2);
+        delegate.ignorableWhitespace(ch, start, length);
     }
 
     /**
-     * @param arg0
-     * @param arg1
+     * @param target
+     * @param data
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#processingInstruction(java.lang.String,
      *      java.lang.String)
      */
     @Override
-    public void processingInstruction(String arg0, String arg1)
+    public void processingInstruction(String target, String data)
             throws SAXException {
-        delegate.processingInstruction(arg0, arg1);
+        delegate.processingInstruction(target, data);
     }
 
     /**
-     * @param arg0
+     * @param locator
      * @see org.xml.sax.ContentHandler#setDocumentLocator(org.xml.sax.Locator)
      */
     @Override
-    public void setDocumentLocator(Locator arg0) {
-        locator = arg0;
-        delegate.setDocumentLocator(arg0);
+    public void setDocumentLocator(Locator locator) {
+        this.locator = locator;
+        delegate.setDocumentLocator(locator);
     }
 
     /**
-     * @param arg0
+     * @param name
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#skippedEntity(java.lang.String)
      */
     @Override
-    public void skippedEntity(String arg0) throws SAXException {
-        delegate.skippedEntity(arg0);
+    public void skippedEntity(String name) throws SAXException {
+        delegate.skippedEntity(name);
     }
 
     /**
@@ -156,24 +161,25 @@ public class RoleAttributeFilteringContentHandlerWrapper
 
     /**
      * @param ns
-     * @param arg1
-     * @param arg2
+     * @param localName
+     * @param qName
      * @param attributes
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#startElement(java.lang.String,
      *      java.lang.String, java.lang.String, org.xml.sax.Attributes)
      */
     @Override
-    public void startElement(String ns, String arg1, String arg2,
+    public void startElement(String ns, String localName, String qName,
             Attributes attributes) throws SAXException {
-        if ("http://www.w3.org/1999/xhtml" == ns) {
-            delegate.startElement(ns, arg1, arg2, filterAttributes(attributes));
+        if ("http://www.w3.org/1999/xhtml".equals(ns)
+                || "http://www.w3.org/2000/svg".equals(ns)) {
+            delegate.startElement(ns, localName, qName, filterAttributes(attributes));
         } else {
-            delegate.startElement(ns, arg1, arg2, attributes);
+            delegate.startElement(ns, localName, qName, attributes);
         }
     }
 
-    private static String[] nonAbstractAriaRoles = { //
+    private static final Set<String> NON_ABSTRACT_ARIA_ROLES = new HashSet<>(Arrays.asList(
             "alert", //
             "alertdialog", //
             "application", //
@@ -232,6 +238,9 @@ public class RoleAttributeFilteringContentHandlerWrapper
             "feed", //
             "figure", //
             "form", //
+            "graphics-document", //
+            "graphics-object", //
+            "graphics-symbol", //
             "grid", //
             "gridcell", //
             "group", //
@@ -258,7 +267,6 @@ public class RoleAttributeFilteringContentHandlerWrapper
             "progressbar", //
             "radio", //
             "radiogroup", //
-            "radiogroup", //
             "region", //
             "row", //
             "rowgroup", //
@@ -283,7 +291,7 @@ public class RoleAttributeFilteringContentHandlerWrapper
             "tree", //
             "treegrid", //
             "treeitem" //
-    };
+    ));
 
     private Attributes filterAttributes(Attributes attributes)
             throws SAXException {
@@ -295,7 +303,7 @@ public class RoleAttributeFilteringContentHandlerWrapper
                         attributes.getLocalName(i), attributes.getQName(i),
                         attributes.getType(i),
                         getFirstMatchingAriaRoleFromTokenList(
-                                attributes.getValue(i)));
+                                attributes.getValue(i).trim()));
             } else {
                 attributesImpl.addAttribute(attributes.getURI(i),
                         attributes.getLocalName(i), attributes.getQName(i),
@@ -307,11 +315,11 @@ public class RoleAttributeFilteringContentHandlerWrapper
 
     private String getFirstMatchingAriaRoleFromTokenList(String tokenList)
             throws SAXException {
-        if (tokenList == null || "".equals(tokenList)) {
+        if ("".equals(tokenList)) {
             return "";
         }
         int len = tokenList.length();
-        List<String> tokens = new LinkedList<>();
+        List<String> tokens = new ArrayList<>();
         boolean collectingSpace = true;
         int start = 0;
         for (int i = 0; i < len; i++) {
@@ -332,10 +340,10 @@ public class RoleAttributeFilteringContentHandlerWrapper
             tokens.add(tokenList.substring(start, len));
         }
         String roleValue = null;
-        List<String> unrecognizedTokens = new LinkedList<>();
-        List<String> superfluousTokens = new LinkedList<>();
+        List<String> unrecognizedTokens = new ArrayList<>();
+        List<String> superfluousTokens = new ArrayList<>();
         for (String token : tokens) {
-            if (Arrays.binarySearch(nonAbstractAriaRoles, token) < 0) {
+            if (!NON_ABSTRACT_ARIA_ROLES.contains(token)) {
                 unrecognizedTokens.add(token);
             } else if (roleValue == null) {
                 roleValue = token;
@@ -350,17 +358,19 @@ public class RoleAttributeFilteringContentHandlerWrapper
             errorHandler.error(new SAXParseException("Discarding unrecognized"
                     + renderTokenList(unrecognizedTokens)
                     + " from value of attribute"
-                    + " \u201Crole\u201D. Browsers ignore any"
+                    + " “role”. Browsers ignore any"
                     + " token that is not a defined ARIA"
                     + " non-abstract role.", locator));
 
         }
-        if (errorHandler != null && roleValue != null
+        if (errorHandler instanceof InfoAwareErrorHandler
+                && roleValue != null
                 && superfluousTokens.size() > 0) {
-            errorHandler.error(new SAXParseException("Discarding superfluous"
+            ((InfoAwareErrorHandler) errorHandler).info(
+                    new SAXParseException("Discarding superfluous"
                     + renderTokenList(superfluousTokens)
                     + " from value of attribute"
-                    + " \u201Crole\u201D. Browsers only process"
+                    + " “role”. Browsers only process"
                     + " the first token found that is a defined"
                     + " ARIA non-abstract role.", locator));
 
@@ -382,24 +392,24 @@ public class RoleAttributeFilteringContentHandlerWrapper
             } else {
                 sb.append(", ");
             }
-            sb.append("\u201C");
+            sb.append("“");
             sb.append(token);
-            sb.append('\u201D');
+            sb.append('”');
         }
         return sb;
     }
 
     /**
-     * @param arg0
-     * @param arg1
+     * @param prefix
+     * @param uri
      * @throws SAXException
      * @see org.xml.sax.ContentHandler#startPrefixMapping(java.lang.String,
      *      java.lang.String)
      */
     @Override
-    public void startPrefixMapping(String arg0, String arg1)
+    public void startPrefixMapping(String prefix, String uri)
             throws SAXException {
-        delegate.startPrefixMapping(arg0, arg1);
+        delegate.startPrefixMapping(prefix, uri);
     }
 
 }

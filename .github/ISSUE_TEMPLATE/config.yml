@@ -1,0 +1,15 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "CSS issue"
+    url: https://github.com/w3c/css-validator/issues/new
+    about: "If you encounter a CSS-related problem with the checker, use this link to report it"
+  - name: "Chat"
+    url: https://whatwg.org/chat
+    about: "You can reach the vnu checker maintainer and other knowledgable people in the WHATWG room on the Matrix network"
+  - name: "Project docs"
+    url: https://github.com/validator/validator/blob/main/README.md
+    about: "Learn about the vnu checker and how to use it"
+  - name: "Contributing guide"
+    url: https://github.com/validator/validator/blob/main/CONTRIBUTING.md
+    about: "Learn how to contribute to the vnu checker project"
+# yaml-language-server: # $schema=https://www.schemastore.org/github-issue-config.json

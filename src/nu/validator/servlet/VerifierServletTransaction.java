@@ -120,21 +120,20 @@ import org.xml.sax.SAXParseException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.ext.LexicalHandler;
 
-import com.thaiopensource.relaxng.impl.CombineValidator;
-import com.thaiopensource.util.PropertyMap;
-import com.thaiopensource.util.PropertyMapBuilder;
-import com.thaiopensource.validate.IncorrectSchemaException;
-import com.thaiopensource.validate.Schema;
-import com.thaiopensource.validate.SchemaReader;
-import com.thaiopensource.validate.SchemaResolver;
-import com.thaiopensource.validate.ValidateProperty;
-import com.thaiopensource.validate.Validator;
-import com.thaiopensource.validate.auto.AutoSchemaReader;
-import com.thaiopensource.validate.prop.rng.RngProperty;
-import com.thaiopensource.validate.prop.wrap.WrapProperty;
-import com.thaiopensource.validate.rng.CompactSchemaReader;
+import nu.validator.vendor.thaiopensource.relaxng.impl.CombineValidator;
+import nu.validator.vendor.thaiopensource.util.PropertyMap;
+import nu.validator.vendor.thaiopensource.util.PropertyMapBuilder;
+import nu.validator.vendor.thaiopensource.validate.IncorrectSchemaException;
+import nu.validator.vendor.thaiopensource.validate.Schema;
+import nu.validator.vendor.thaiopensource.validate.SchemaReader;
+import nu.validator.vendor.thaiopensource.validate.SchemaResolver;
+import nu.validator.vendor.thaiopensource.validate.ValidateProperty;
+import nu.validator.vendor.thaiopensource.validate.Validator;
+import nu.validator.vendor.thaiopensource.validate.auto.AutoSchemaReader;
+import nu.validator.vendor.thaiopensource.validate.prop.rng.RngProperty;
+import nu.validator.vendor.thaiopensource.validate.prop.wrap.WrapProperty;
+import nu.validator.vendor.thaiopensource.validate.rng.CompactSchemaReader;
 
-import org.apache.http.conn.ConnectTimeoutException;
 import org.apache.log4j.Logger;
 
 import com.ibm.icu.text.Normalizer;
@@ -257,13 +256,16 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
             "http://www.w3.org/2000/svg" };
 
     private static final String[] ALL_CHECKERS = {
-            "http://c.validator.nu/table/", "http://c.validator.nu/nfc/",
+            "http://c.validator.nu/table/", "http://c.validator.nu/duplicate-dt/",
+            "http://c.validator.nu/heading-hierarchy/", "http://c.validator.nu/nfc/",
+            "http://c.validator.nu/speculation-rules/",
             "http://c.validator.nu/text-content/",
             "http://c.validator.nu/unchecked/",
-            "http://c.validator.nu/usemap/", "http://c.validator.nu/obsolete/",
-            "http://c.validator.nu/xml-pi/", "http://c.validator.nu/unsupported/",
+            "http://c.validator.nu/usemap/",
+            "http://c.validator.nu/xml-pi/",
             "http://c.validator.nu/microdata/",
-            "http://c.validator.nu/langdetect/" };
+            "http://c.validator.nu/langdetect/",
+            "http://c.validator.nu/csp-enforcement/" };
 
     private long start = System.currentTimeMillis();
 
@@ -386,7 +388,11 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
 
     private boolean showSource;
 
+    private boolean showSourceExplicitly;
+
     private boolean showOutline;
+
+    private boolean skipInfoMessages;
 
     private boolean checkErrorPages;
 
@@ -426,11 +432,20 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
             List<String> labels = new LinkedList<>();
             List<String> urls = new LinkedList<>();
             Properties props = new Properties();
+            Properties props2 = new Properties();
 
             log4j.debug("Reading miscellaneous properties.");
 
             props.load(VerifierServlet.class.getClassLoader().getResourceAsStream(
                     "nu/validator/localentities/files/misc.properties"));
+
+            try(InputStream fis = new FileInputStream("vnu.properties")) {
+                props2.load(fis);
+            } catch(IOException e) {
+                log4j.debug("Optional vnu.properties file not found.");
+            }
+            props.putAll(props2);
+
             SERVICE_TITLE = (System.getProperty(
                     "nu.validator.servlet.service-name",
                     props.getProperty("nu.validator.servlet.service-name",
@@ -509,10 +524,16 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                     CheckerSchema.TABLE_CHECKER);
             schemaMap.put("http://hsivonen.iki.fi/checkers/table/",
                     CheckerSchema.TABLE_CHECKER);
+            schemaMap.put("http://c.validator.nu/duplicate-dt/",
+                    CheckerSchema.DUPLICATE_DT_CHECKER);
+            schemaMap.put("http://c.validator.nu/heading-hierarchy/",
+                    CheckerSchema.HEADING_HIERARCHY_CHECKER);
             schemaMap.put("http://c.validator.nu/nfc/",
                     CheckerSchema.NORMALIZATION_CHECKER);
             schemaMap.put("http://hsivonen.iki.fi/checkers/nfc/",
                     CheckerSchema.NORMALIZATION_CHECKER);
+            schemaMap.put("http://c.validator.nu/speculation-rules/",
+                    CheckerSchema.SPECULATION_RULES_CHECKER);
             schemaMap.put("http://c.validator.nu/debug/",
                     CheckerSchema.DEBUG_CHECKER);
             schemaMap.put("http://hsivonen.iki.fi/checkers/debug/",
@@ -529,18 +550,16 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                     CheckerSchema.UNCHECKED_SUBTREE_WARNER);
             schemaMap.put("http://s.validator.nu/html5/assertions.sch",
                     CheckerSchema.ASSERTION_SCH);
-            schemaMap.put("http://c.validator.nu/obsolete/",
-                    CheckerSchema.CONFORMING_BUT_OBSOLETE_WARNER);
             schemaMap.put("http://c.validator.nu/xml-pi/",
                     CheckerSchema.XML_PI_CHECKER);
-            schemaMap.put("http://c.validator.nu/unsupported/",
-                    CheckerSchema.UNSUPPORTED_CHECKER);
             schemaMap.put("http://c.validator.nu/microdata/",
                     CheckerSchema.MICRODATA_CHECKER);
             schemaMap.put("http://c.validator.nu/rdfalite/",
                     CheckerSchema.RDFALITE_CHECKER);
             schemaMap.put("http://c.validator.nu/langdetect/",
                     CheckerSchema.LANGUAGE_DETECTING_CHECKER);
+            schemaMap.put("http://c.validator.nu/csp-enforcement/",
+                    CheckerSchema.CSP_ENFORCEMENT_CHECKER);
 
             for (String presetUrl : presetUrls) {
                 for (String url : SPACE.split(presetUrl)) {
@@ -584,9 +603,27 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
 
             log4j.debug("Reading spec.");
 
-            html5spec = Html5SpecBuilder.parseSpec(LocalCacheEntityResolver.getHtml5SpecAsStream());
+            long startTime = System.currentTimeMillis();
+            String html5Load = props.getProperty("nu.validator.spec.html5-load");
+            Boolean useBuiltinSpec = false;
+            if (html5Load != null) {
+                log4j.debug("Trying external spec at: " + html5Load);
+                File html5file = new File(html5Load);
+                try {
+                    html5spec = Html5SpecBuilder.parseSpec(LocalCacheEntityResolver.getHtml5SpecAsStream(html5file));
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    log4j.debug("Failed...");
+                    useBuiltinSpec = true;
+                }
+            }
+            if (html5Load == null || useBuiltinSpec == true) {
+                log4j.debug("Trying built-in spec");
+                html5spec = Html5SpecBuilder.parseSpec(LocalCacheEntityResolver.getHtml5SpecAsStream("nu/validator/localentities/files/html5spec"));
+            }
+            long endTime = System.currentTimeMillis();
 
-            log4j.debug("Spec read.");
+            log4j.debug("Spec read in " + (endTime - startTime) + " milliseconds.");
 
             if (new File(FILTER_FILE).isFile()) {
                 log4j.debug("Reading filter file " + FILTER_FILE);
@@ -662,7 +699,8 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 || "http://s.validator.nu/xhtml5-all.rnc".equals(key)
                 || "http://s.validator.nu/html5-its.rnc".equals(key)
                 || "http://s.validator.nu/xhtml5-rdfalite.rnc".equals(key)
-                || "http://s.validator.nu/html5-rdfalite.rnc".equals(key));
+                || "http://s.validator.nu/html5-rdfalite.rnc".equals(key)
+                || "http://s.validator.nu/svg-xhtml5-rdf-mathml.rnc".equals(key));
     }
 
     private static boolean isTemplateElementDroppingSchema(String key) {
@@ -789,12 +827,6 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                     return;
                 }
             }
-            if ((document.contains("google."))
-                    || (document.contains("yahoo."))
-                    || (document.contains("outlook.live."))) {
-                response.sendRedirect(document);
-                return;
-            }
         }
 
         String callback = null;
@@ -816,9 +848,11 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
             }
         }
 
+        response.setHeader("Cache-Control",
+                "no-cache, no-store, must-revalidate");
+
         if (willValidate()) {
             response.setDateHeader("Expires", 0);
-            response.setHeader("Cache-Control", "no-cache");
         } else if (outputFormat == OutputFormat.HTML
                 || outputFormat == OutputFormat.XHTML) {
             response.setDateHeader("Last-Modified", lastModified);
@@ -886,9 +920,32 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                     "http://validator.nu/properties/accept-language",
                     scrub(request.getParameter("acceptlanguage")));
         }
+        String[] additionalHeaderParams = request.getParameterValues(
+                "additionalrequestheader");
+        if (additionalHeaderParams != null) {
+            java.util.Map<String, String> additionalHeaders =
+                new java.util.HashMap<>();
+            for (String headerValue : additionalHeaderParams) {
+                int colonIndex = headerValue.indexOf(':');
+                if (colonIndex != -1) {
+                    String headerName = headerValue.substring(0,
+                            colonIndex).trim();
+                    String headerVal = headerValue.substring(
+                            colonIndex + 1).trim();
+                    if (!headerName.isEmpty()) {
+                        additionalHeaders.put(headerName, headerVal);
+                    }
+                }
+            }
+            if (!additionalHeaders.isEmpty()) {
+                request.setAttribute(
+                        "http://validator.nu/properties/additional-request-headers",
+                        additionalHeaders);
+            }
+        }
         Object inputType = request.getAttribute("nu.validator.servlet.MultipartFormDataFilter.type");
-        showSource = (request.getParameter("showsource") != null);
-        showSource = (showSource || "textarea".equals(inputType));
+        showSourceExplicitly = (request.getParameter("showsource") != null);
+        showSource = (showSourceExplicitly || "textarea".equals(inputType));
         showOutline = (request.getParameter("showoutline") != null);
         if (request.getParameter("checkerrorpages") != null) {
             request.setAttribute(
@@ -917,6 +974,8 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
         }
 
         boolean errorsOnly = ("error".equals(request.getParameter("level")));
+
+        skipInfoMessages = ("warning".equals(request.getParameter("level")));
 
         boolean asciiQuotes = false;
 
@@ -953,6 +1012,8 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 errorHandler = new MessageEmitterAdapter(request, filterPattern,
                         sourceCode, showSource, imageCollector, lineOffset,
                         false, new XhtmlMessageEmitter(contentHandler));
+                errorHandler.setErrorsOnly(errorsOnly);
+                errorHandler.setSkipInfoMessages(skipInfoMessages);
                 PageEmitter.emit(contentHandler, this);
             } else {
                 if (outputFormat == OutputFormat.TEXT) {
@@ -986,11 +1047,12 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                             lineOffset, false,
                             new JsonMessageEmitter(
                                     new nu.validator.json.Serializer(out),
-                                    callback, asciiQuotes));
+                                    callback, asciiQuotes, String.valueOf(VERSION)));
                 } else {
                     throw new RuntimeException("Unreachable.");
                 }
                 errorHandler.setErrorsOnly(errorsOnly);
+                errorHandler.setSkipInfoMessages(skipInfoMessages);
                 validate();
             }
         } catch (SAXException e) {
@@ -1073,6 +1135,13 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
         httpRes = new PrudentHttpEntityResolver(SIZE_LIMIT, laxType,
                 errorHandler, request);
         httpRes.setUserAgent(userAgent);
+        if (request.getAttribute(
+                "http://validator.nu/properties/additional-request-headers") != null) {
+            java.util.Map<String, String> additionalHeaders =
+                (java.util.Map<String, String>) request.getAttribute(
+                    "http://validator.nu/properties/additional-request-headers");
+            httpRes.setAdditionalRequestHeaders(additionalHeaders);
+        }
         dataRes = new DataUriEntityResolver(httpRes, laxType, errorHandler);
         contentTypeParser = new ContentTypeParser(errorHandler, laxType);
         entityResolver = new LocalCacheEntityResolver(dataRes);
@@ -1161,13 +1230,13 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 String charset = documentInput.getEncoding();
                 if (charset == null) {
                     errorHandler.warning(new SAXParseException(
-                            "Overriding document character encoding from none to \u201C"
-                                    + charsetOverride + "\u201D.", null));
+                            "Overriding document character encoding from none to “"
+                                    + charsetOverride + "”.", null));
                 } else {
                     errorHandler.warning(new SAXParseException(
-                            "Overriding document character encoding from \u201C"
-                                    + charset + "\u201D to \u201C"
-                                    + charsetOverride + "\u201D.", null));
+                            "Overriding document character encoding from “"
+                                    + charset + "” to “"
+                                    + charsetOverride + "”.", null));
                 }
                 documentInput.setEncoding(charsetOverride);
             }
@@ -1192,8 +1261,6 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
             log4j.debug(e.getMessage());
         } catch (SocketTimeoutException e) {
             errorHandler.ioError(new IOException(e.getMessage(), null));
-        } catch (ConnectTimeoutException e) {
-            errorHandler.ioError(new IOException(e.getMessage(), null));
         } catch (TooManyErrorsException e) {
             errorHandler.fatalError(e);
         } catch (SAXException e) {
@@ -1202,21 +1269,8 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 log4j.debug("SAXException: " + e.getMessage());
             }
         } catch (IOException e) {
-            if (e.getCause() instanceof org.apache.http.TruncatedChunkException) {
-                log4j.debug("TruncatedChunkException", e.getCause());
-            } else if (e.getCause() instanceof //
-                    org.apache.http.MalformedChunkCodingException
-                    && (e.getMessage(). //
-                        contains("CRLF expected at end of chunk"))) {
-                log4j.debug("MalformedChunkCodingException", e.getCause());
-            } else if (e.getCause() instanceof //
-                    org.apache.http.ConnectionClosedException
-                    && (e.getMessage().contains("closing chunk expected"))) {
-                log4j.debug("ConnectionClosedException", e.getCause());
-            } else {
-                isHtmlOrXhtml = false;
-                errorHandler.ioError(e);
-            }
+            isHtmlOrXhtml = false;
+            errorHandler.ioError(e);
         } catch (IncorrectSchemaException e) {
             log4j.debug("IncorrectSchemaException", e);
             errorHandler.schemaError(e);
@@ -1649,7 +1703,7 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                     break;
                 } else if ("text/html".equals(type) || "text/html-sandboxed".equals(type)) {
                     if (isHtmlUnsafePreset()) {
-                        String message = "The Content-Type was \u201C" + type + "\u201D, but the chosen preset schema is not appropriate for HTML.";
+                        String message = "The Content-Type was “" + type + "”, but the chosen preset schema is not appropriate for HTML.";
                         SAXException se = new SAXException(message);
                         errorHandler.schemaError(se);
                         throw se;
@@ -1666,9 +1720,9 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                             "text/xml".equals(contentType) ||
                             (Arrays.binarySearch(KNOWN_CONTENT_TYPES,
                                 contentType)) > -1) {
-                            errorHandler.info("The Content-Type was \u201C"
+                            errorHandler.info("The Content-Type was “"
                                     + type
-                                    + "\u201D. Using the XML parser (not resolving external entities).");
+                                    + "”. Using the XML parser (not resolving external entities).");
                         }
                     }
                     setupXmlParser();
@@ -1925,6 +1979,9 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
             } else {
                 emitter.characters("contents of text-input area");
             }
+            emitter.characters(" (checked with vnu ");
+            emitter.characters(VERSION);
+            emitter.characters(")");
         } else {
             emitter.characters(SERVICE_TITLE);
             if (markupAllowed
@@ -2100,7 +2157,7 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
      *
      */
     void emitShowSourceField() throws SAXException {
-        emitter.checkbox("showsource", "yes", showSource);
+        emitter.checkbox("showsource", "yes", showSourceExplicitly);
     }
 
     /**
@@ -2117,6 +2174,10 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
      */
     void emitShowImageReportField() throws SAXException {
         emitter.checkbox("showimagereport", "yes", imageCollector != null);
+    }
+
+    void emitWarningsOnlyField() throws SAXException {
+        emitter.checkbox("level", "warning", skipInfoMessages);
     }
 
     void emitCheckErrorPagesField() throws SAXException {
@@ -2137,8 +2198,8 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 message = "XML document with no namespace; cannot determine"
                         + " any schema to use for validation.";
                 if (namespace != "") {
-                    message = "Cannot find preset schema for namespace: \u201C"
-                            + namespace + "\u201D.";
+                    message = "Cannot find preset schema for namespace: “"
+                            + namespace + "”.";
                 }
                 SAXException se = new SAXException(message);
                 errorHandler.schemaError(se);
@@ -2167,13 +2228,13 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 int i;
                 if ((i = Arrays.binarySearch(KNOWN_CONTENT_TYPES, contentType)) > -1) {
                     if (!NAMESPACES_FOR_KNOWN_CONTENT_TYPES[i].equals(namespace)) {
-                        String message = "".equals(namespace) ? "\u201C"
+                        String message = "".equals(namespace) ? "“"
                                 + contentType
-                                + "\u201D is not an appropriate Content-Type for a document whose root element is not in a namespace."
-                                : "\u201C"
+                                + "” is not an appropriate Content-Type for a document whose root element is not in a namespace."
+                                : "“"
                                         + contentType
-                                        + "\u201D is not an appropriate Content-Type for a document whose root namespace is \u201C"
-                                        + namespace + "\u201D.";
+                                        + "” is not an appropriate Content-Type for a document whose root namespace is “"
+                                        + namespace + "”.";
                         SAXParseException spe = new SAXParseException(message,
                                 locator);
                         errorHandler.warning(spe);
@@ -2192,10 +2253,10 @@ class VerifierServletTransaction implements DocumentModeHandler, SchemaResolver 
                 aboutLegacyCompat = true;
                 errorHandler.warning(new SAXParseException(
                         "Documents should not use"
-                                + " \u201cabout:legacy-compat\u201d,"
+                                + " “about:legacy-compat”,"
                                 + " except if generated by legacy systems"
                                 + " that can't output the standard"
-                                + " \u201c<!DOCTYPE html>\u201d  doctype.",
+                                + " “<!DOCTYPE html>”  doctype.",
                         null));
             }
             if (systemIdentifier.contains("http://www.w3.org/TR/xhtml1")) {
