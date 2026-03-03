@@ -4,7 +4,6 @@
 # Copyright (c) 2019 Mozilla Foundation
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
-
 # copy of this software and associated documentation files (the "Software"),
 # to deal in the Software without restriction, including without limitation
 # the rights to use, copy, modify, merge, publish, distribute, sublicense,
@@ -22,10 +21,17 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-from build import build
+import os
+import sys
+try:
+    from build import build
+except ImportError as e:
+    print("Error: required module 'build' could not be imported: {}".format(e),
+          file=sys.stderr)
+    sys.exit(1)
 import sys
 
-args = [
+preset_args = [
   '--connection-timeout=15',
   '--socket-timeout=15',
   '--name=Ready to check',
@@ -36,9 +42,6 @@ args = [
   '--script-file=site/nu-script.js',
   '--stylesheet-file=site/nu-style.css'
 ]
+combined_args = preset_args + sys.argv[1:]
 
-if len(sys.argv) > 1:
-    args.extend(sys.argv[1:])
-    build.main(args)
-else:
-    build.printHelp()
+build.main(combined_args, script_name=os.path.basename(__file__))

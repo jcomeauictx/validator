@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*- vim: set fileencoding=utf-8 :
 
 # Copyright (c) 2007 Henri Sivonen
@@ -23,8 +23,10 @@
 # DEALINGS IN THE SOFTWARE.
 
 import os
+import shlex
 import shutil
 import json
+import xml.etree.ElementTree as ET
 try:
     from urllib.request import urlopen
     from urllib.error import URLError, HTTPError
@@ -52,59 +54,146 @@ except ImportError:
 import subprocess
 from ssl import SSLError
 import time
+import argparse
+try:
+    import argcomplete
+    ARGCOMPLETE_AVAILABLE = True
+except ImportError:
+    ARGCOMPLETE_AVAILABLE = False
 # Use newer https certifications from certifi package if available
 try:
     import certifi
     CAFILE = certifi.where()
 except ImportError:
     CAFILE = None
+from pathlib import Path
 
-javaTargetVersion = '8'
-herokuCmd = 'heroku'
+
+class CustomHelpAction(argparse.Action):
+    def __init__(self, option_strings, dest, script_name=None, **kwargs):
+        kwargs.pop('script_name', None)
+        super(CustomHelpAction, self).__init__(option_strings, dest,
+                                               nargs=0, **kwargs)
+        self.script_name = script_name
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.print_help()
+        printCompletionInstructions(self.script_name)
+        sys.exit(0)
+
+
+class TasksFormatter(argparse.RawTextHelpFormatter):
+    def _format_action(self, action):
+        if action.dest == 'tasks':
+            task_choices = sorted(getTaskChoices())
+            help_text = ''
+            for task in task_choices:
+                help_text += f'  {task}\n'
+            action.help = help_text
+            # Return custom format with colon and newline
+            return f'tasks:\n{action.help}'
+        return super()._format_action(action)
+
+    def _format_usage(self, usage, actions, groups, prefix):
+        sorted_actions = sorted(actions, key=lambda a: a.dest if a.dest !=
+                                'help' else '')
+        return super()._format_usage(usage, sorted_actions, groups, prefix)
+
+    def add_arguments(self, actions):
+        sorted_actions = sorted(actions, key=lambda a: a.option_strings[0]
+                                if a.option_strings else a.dest)
+        super().add_arguments(sorted_actions)
+
+    def format_help(self):
+        help_text = super().format_help()
+        # Find and extract the tasks section (which appears right after usage)
+        lines = help_text.split('\n')
+        filteredLines = []
+        tasks_lines = []
+        in_tasks_section = False
+
+        for line in lines:
+            if line.strip() == 'positional arguments:':
+                continue
+
+            if line.strip() == 'tasks:':
+                in_tasks_section = True
+                continue
+
+            if in_tasks_section:
+                # Check if we've reached optional arguments
+                if line.strip() == 'optional arguments:':
+                    in_tasks_section = False
+                    filteredLines.append(line)
+                else:
+                    # Extract task names
+                    if line.strip():
+                        tasks_lines.append(line.strip())
+            else:
+                filteredLines.append(line)
+
+        # Insert tasks section at the end, before the completion instructions
+        insert_pos = len(filteredLines)
+        for i, line in enumerate(filteredLines):
+            if 'To enable shell tab completion' in line:
+                insert_pos = i
+                break
+
+        if tasks_lines:
+            filteredLines.insert(insert_pos, 'tasks:')
+            for task in tasks_lines:
+                filteredLines.insert(insert_pos + 1, f'    {task}')
+                insert_pos += 1
+            filteredLines.insert(insert_pos + 1, '')
+
+        return '\n'.join(filteredLines)
+
+
+os.environ["PYTHONIOENCODING"] = "utf-8"
+javaTargetVersion = '11'
 dockerCmd = 'docker'
-ghRelCmd = 'github-release'  # https://github.com/sideshowbarker/github-release
+curlCmd = 'curl'
+makeCmd = 'make'
 tarCmd = 'tar'
 scpCmd = 'scp'
 gitCmd = 'git'
 mvnCmd = 'mvn'
 gpgCmd = 'gpg'
 npmCmd = 'npm'
-
-gitHubUser = subprocess.run([gitCmd, 'config', 'github.user'], capture_output=True).stdout.decode("utf-8")  # nopep8
-
-snapshotsRepoUrl = 'https://oss.sonatype.org/content/repositories/snapshots/'
-stagingRepoUrl = 'https://oss.sonatype.org/service/local/staging/deploy/maven2/'  # nopep8
-# in your ~/.ssh/config, you'll need to define a host named "releasesHost"
-releasesHost = "releasesHost"
-nightliesPath = "/var/www/nightlies"
-releasesPath = "/var/www/releases"
+antCmd = 'ant'
+antCommonArgs = []
+offline = False
+verbose = False
 
 releaseDate = time.strftime('%d %B %Y')
 year = time.strftime('%y')
 month = time.strftime('%m').lstrip('0')
 day = time.strftime('%d').lstrip('0')
 validatorVersion = "%s.%s.%s" % (year, month, day)
-# validatorVersion = "20.6.30"
-jingVersion = "20200702VNU"
-htmlparserVersion = "1.4.16"
-cssvalidatorVersion = "1.0.8"
-galimatiasVersion = "0.1.3"
-langdetectVersion = "1.2"
 
 buildRoot = '.'
 distDir = os.path.join(buildRoot, "build", "dist")
 distWarDir = os.path.join(buildRoot, "build", "dist-war")
+mavenArtifactsDir = os.path.join(distDir, "nu", "validator", "validator",
+                                 validatorVersion)
+vnuCmd = os.path.join(distDir, "vnu-runtime-image", "bin", "vnu")
 vnuJar = os.path.join(distDir, "vnu.jar")
+os.environ["VNUJAR"] = str(Path(vnuJar).resolve())
 dependencyDir = os.path.join(buildRoot, "dependencies")
+coverageDir = os.path.join(buildRoot, "build", "coverage")
+jacocoVersion = "0.8.14"
+jacocoAgentJar = os.path.join(dependencyDir,
+    "org.jacoco.agent-%s-runtime.jar" % jacocoVersion)
+jacocoCliJar = os.path.join(dependencyDir,
+    "org.jacoco.cli-%s-nodeps.jar" % jacocoVersion)
+coverageThreshold = 70  # minimum line coverage percentage
 extrasDir = os.path.join(buildRoot, "extras")
 jarsDir = os.path.join(buildRoot, "jars")
 jingTrangDir = os.path.join(buildRoot, "jing-trang")
 cssValidatorDir = os.path.join(buildRoot, "css-validator")
-vnuSrc = os.path.join(buildRoot, "src", "nu", "validator")
-filesDir = os.path.join(vnuSrc, "localentities", "files")
-antRoot = os.path.join(jingTrangDir, "lib")
-antJar = os.path.join(antRoot, "ant.jar")
-antLauncherJar = os.path.join(antRoot, "ant-launcher.jar")
+# filesDir is the dir where built resources are stored
+filesDir = os.path.join(buildRoot, "build", "validator", "resources", "nu",
+                        "validator", "localentities", "files")
 
 pageTemplate = os.path.join("site", "PageEmitter.xml")
 formTemplate = os.path.join("site", "FormEmitter.xml")
@@ -113,6 +202,7 @@ aboutFile = os.path.join("site", "about.html")
 stylesheetFile = os.path.join("site", "style.css")
 scriptFile = os.path.join("site", "script.js")
 filterFile = os.path.join("resources", "message-filters.txt")
+gitSubtreesFile = os.path.join(buildRoot, ".gitsubtrees.yaml")
 
 bindAddress = '0.0.0.0'
 portNumber = '8888'
@@ -131,9 +221,10 @@ scriptAdditional = ''
 serviceName = 'Validator.nu'
 resultsTitle = 'Validation results'
 messagesLimit = 1000
-maxFileSize = 15360
+maxFileSize = 25600
 disablePromiscuousSsl = 0
 allowedAddressType = 'all'
+allowForbiddenHosts = False
 genericHost = ''
 html5Host = ''
 parsetreeHost = ''
@@ -148,51 +239,7 @@ maxConnPerRoute = 100
 maxTotalConnections = 200
 maxRedirects = 20  # Gecko default
 statistics = 0
-miniDoc = '<!doctype html><html lang=""><meta charset=utf-8><title>test</title>'  # nopep8
 additionalJavaSystemProperties = ''
-
-dependencyPackages = [
-    ("https://repo1.maven.org/maven2/com/ibm/icu/icu4j/70.1/icu4j-70.1.jar", "d0583e891bfeb065b17806d8c6535bda"),  # nopep8
-    ("https://repo1.maven.org/maven2/com/shapesecurity/salvation/2.7.2/salvation-2.7.2.jar", "d81345b141a8cc93fc6be49a6840a7f0"),  # nopep8
-    ("https://repo1.maven.org/maven2/commons-codec/commons-codec/1.15/commons-codec-1.15.jar", "303baf002ce6d382198090aedd9d79a2"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/commons/commons-fileupload2-core/2.0.0-M2/commons-fileupload2-core-2.0.0-M2.jar", "6180d94509d26d293bd2d04389156e4b"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/commons/commons-fileupload2-jakarta-servlet5/2.0.0-M2/commons-fileupload2-jakarta-servlet5-2.0.0-M2.jar", "6389bdd4bbcc54082686e3707289e780"),  # nopep8
-    ("https://repo1.maven.org/maven2/commons-io/commons-io/2.15.1/commons-io-2.15.1.jar", "84351f7991a0e6722f00e96a4ccc376f"),  # nopep8
-    ("https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar", "040b4b4d8eac886f6b4a2a3bd2f31b00"),  # nopep8
-    ("https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2-adapters.jar", "5c82e86cc5b769f72abd2af1f92255fa"),  # nopep8
-    ("https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2-api.jar", "289dcb376743ab24ecaeb194a0d287d9"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/mail/mail/1.4.7/mail-1.4.7.jar", "77f53ff0c78ba43c4812ecc9f53e20f8"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/toolchain/jetty-jakarta-servlet-api/5.0.2/jetty-jakarta-servlet-api-5.0.2.jar", "7de826f76a829dc9dfb41e437ff4bd01"),  # nopep8
-    ("https://repo1.maven.org/maven2/log4j/log4j/1.2.17/log4j-1.2.17.jar", "04a41f0a068986f0f73485cf507c0f40"),  # nopep8
-    ("https://repo1.maven.org/maven2/net/sourceforge/jchardet/jchardet/1.0/jchardet-1.0.jar", "90c63f0e53e6f714dbc7641e066620e4"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar", "40d6b9075fbd28fa10292a45a0db9457"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/httpcomponents/httpcore/4.4.14/httpcore-4.4.14.jar", "2b3991eda121042765a5ee299556c200"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-http/11.0.20/jetty-http-11.0.20.jar", "fbbf12c985f7e9f5387c52b700057129"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-io/11.0.20/jetty-io-11.0.20.jar", "69edc0f6fb44ad9cd341f15d086859d7"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-security/11.0.20/jetty-security-11.0.20.jar", "65160e47126973ac352857430c0f0eb3"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-server/11.0.20/jetty-server-11.0.20.jar", "b6d93046e20136bfca140d4f68cd9c8a"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-servlet/11.0.20/jetty-servlet-11.0.20.jar", "eef8ffa65723dfd913af3c56173041b2"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-servlets/11.0.20/jetty-servlets-11.0.20.jar", "d3c54ba8c07b70c124a8908f5a5f6d9f"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util/11.0.20/jetty-util-11.0.20.jar", "83d40c5c7d81c7f6ba2772d76387397d"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/11.0.20/jetty-util-ajax-11.0.20.jar", "c853563f3fa877f512e91dab5c30fd3a"),  # nopep8
-]
-
-moduleDependencyPackages = [
-    ("https://repo1.maven.org/maven2/com/sun/activation/javax.activation/1.2.0/javax.activation-1.2.0.jar", "be7c430df50b330cffc4848a3abedbfb"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/avalon/framework/avalon-framework-api/4.3.1/avalon-framework-api-4.3.1.jar", "7c543869a7eb2bad323a54e873973acf"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/apache/avalon/logkit/avalon-logkit/2.2.1/avalon-logkit-2.2.1.jar", "1cff819c8516bbe070530f3a8d801f2e"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/enterprise/cdi-api/2.0/cdi-api-2.0.jar", "a7768f3b33cd35f63d9cdcedfd537500"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/el/el-api/2.2/el-api-2.2.jar", "900b2de76d7c98f8dcbb43684c823113"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar", "5e50e56bcf4a3ef3bc758f69f7643c3b"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/inject/javax.inject/1/javax.inject-1.jar", "289075e48b909e9e74e6c915b3631d2e"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/interceptor/javax.interceptor-api/1.2.2/javax.interceptor-api-1.2.2.jar", "d46f2dac1607941fbfb81eb7bc83157a"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1.jar", "d69d2e02910e97b2478c0105e9b2caab"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-jmx/11.0.20/jetty-jmx-11.0.20.jar", "605528653766f728f7ff994e39c17fa2"),  # nopep8
-    ("https://repo1.maven.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar", "dd83accb899363c32b07d7a1b2e4ce40"),  # nopep8
-    ("https://repo1.maven.org/maven2/javax/portlet/portlet-api/3.0.1/portlet-api-3.0.1.jar", "ff22c9434e12a87b6023e301600b6c44"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.29/slf4j-api-1.7.29.jar", "75191c97f2d6ef4f990cbb4b2e56a46b"),  # nopep8
-    ("https://repo1.maven.org/maven2/org/slf4j/slf4j-log4j12/1.7.32/slf4j-log4j12-1.7.32.jar", "9d80c6b213a73789fccd3fe48d5cb34c"),  # nopep8
-]
 
 javaSafeNamePat = re.compile(r'[^a-zA-Z0-9]')
 directoryPat = re.compile(r'^[a-zA-Z0-9_-]+/$')
@@ -209,7 +256,6 @@ class UrlExtractor(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag == "a":
-            print(attrs)
             for name, value in attrs:
                 if name == "href":
                     if directoryPat.match(value):
@@ -219,20 +265,62 @@ class UrlExtractor(HTMLParser):
 
 
 def runCmd(cmd):
-    print(" ".join(cmd))
+    print(shlex.join(cmd))
     subprocess.check_call(cmd)
 
 
-def execCmd(cmd, args):
-    print("%s %s" % (cmd, " ".join(args)))
+def runCmdFromString(cmdString):
+    print(cmdString)
+    subprocess.check_call(cmdString, shell=True)
+
+
+def execCmd(cmd, args, silent=False):
+    print(shlex.join([cmd] + args))
     if subprocess.call([cmd, ] + args):
-        print("Command failed.")
+        if not silent:
+            print("Command failed.")
         sys.exit(2)
 
 
 def runShell(shellCmd):
-    print(shellCmd)
+    print(shlex.join(shellCmd))
     return subprocess.call(shellCmd, shell=True)
+
+
+def runAnt(opts, targets):
+    # Append antCommonArgs after the default values so that they can be
+    # overridden; e.g. with --ant-extra-arg options passed to this script.
+    antOpts = ['-Dbuild.java.target.version=' + javaTargetVersion,
+               '-Ddist=' + distDir,
+               '-Dvalidator.param.aboutFile=' + aboutFile,
+               '-Dvalidator.param.formTemplate=' + formTemplate,
+               '-Dvalidator.param.pageTemplate=' + pageTemplate,
+               '-Dvalidator.param.presetsFile=' + presetsFile,
+               '-Dvalidator.param.resultsTitle=' + resultsTitle,
+               '-Dvalidator.param.scriptFile=' + scriptFile,
+               '-Dvalidator.param.serviceName=' + serviceName,
+               '-Dvalidator.param.stylesheetFile=' + stylesheetFile,
+               '-Dvalidator.param.userAgent=' + userAgent,
+               '-Dversion=' + validatorVersion,
+               '-f', os.path.join(buildRoot, "build", "build.xml"),
+               ] + antCommonArgs
+
+    if isinstance(targets, str):
+        if targets != "":
+            antTargets = [targets]
+        else:
+            antTargets = []
+    else:
+        antTargets = targets
+
+    # Append the options received in 'opts' at the end of 'antOpts'.
+    # If a property is defined twice, and will take the value of the last one.
+    if isinstance(opts, str):
+        antOpts = antOpts + [opts]
+    else:
+        antOpts = antOpts + opts
+
+    runCmd([antCmd] + antOpts + antTargets)
 
 
 def removeIfExists(filePath):
@@ -295,33 +383,6 @@ def cssValidatorJarPath():
     return [os.path.join(buildRoot, "css-validator", "css-validator.jar"), ]
 
 
-def runJavac(sourceDir, classDir, classPath):
-    ensureDirExists(classDir)
-    sourceFiles = findFilesWithExtension(sourceDir, "java")
-    f = open("temp-javac-list", "w")
-    f.write("\n".join(sourceFiles))
-    f.close()
-    args = [
-        javacCmd,
-        '-g',
-        '-nowarn',
-        '-classpath',
-        classPath,
-        '-sourcepath',
-        sourceDir,
-        '-d',
-        classDir,
-        '-encoding',
-        'UTF-8',
-    ]
-    if javaTargetVersion != "":
-        args.append('--release')
-        args.append(javaTargetVersion)
-    args.append('@temp-javac-list')
-    runCmd(args)
-    removeIfExists("temp-javac-list")
-
-
 def copyFiles(sourceDir, classDir):
     files = findFiles(sourceDir)
     for f in files:
@@ -332,44 +393,11 @@ def copyFiles(sourceDir, classDir):
         shutil.copyfile(f, destFile)
 
 
-def runJar(classDir, jarFile, sourceDir):
-    classFiles = []
-    for file in findFiles(classDir):
-        if file.endswith(".java"):
-            continue
-        classFiles.append(file)
-    classList = ["-C " + classDir + " " + x[len(classDir) + 1:] + "" for x in classFiles]   # nopep8
-    f = open("temp-jar-list", "w")
-    f.write("\n".join(classList))
-    f.close()
-    runCmd([jarCmd, 'cf', jarFile, '@temp-jar-list'])
-    removeIfExists("temp-jar-list")
-
-
-def buildModule(rootDir, jarName, classPath):
-    sourceDir = os.path.join(rootDir, "src")
-    classDir = os.path.join(rootDir, "classes")
-    modDistDir = os.path.join(rootDir, "dist")
-    jarFile = os.path.join(modDistDir, jarName + ".jar")
-    removeIfExists(jarFile)
-    removeIfDirExists(classDir)
-    ensureDirExists(classDir)
-    ensureDirExists(modDistDir)
-    runJavac(sourceDir, classDir, classPath)
-    copyFiles(sourceDir, classDir)
-    runJar(classDir, jarFile, sourceDir)
-    ensureDirExists(jarsDir)
-    shutil.copyfile(jarFile, os.path.join(jarsDir, jarName + ".jar"))
-    removeIfDirExists(classDir)
-    removeIfDirExists(modDistDir)
-
-
 def extrasJarPaths():
     return findFilesWithExtension(extrasDir, "jar")
 
 
 def dependencyJarPaths():
-    extrasDir = os.path.join(buildRoot, "extras")
     pathList = findFilesWithExtension(dependencyDir, "jar")
     for jar in ["saxon9.jar", "isorelax.jar"]:
         pathList += [os.path.join(jingTrangDir, "lib", jar)]
@@ -379,12 +407,15 @@ def dependencyJarPaths():
 
 
 def buildSchemaDrivers():
-    baseDir = os.path.join(buildRoot, "schema")
-    html5Dir = os.path.join(baseDir, "html5")
-    driversDir = os.path.join(baseDir, ".drivers")
-    legacyRnc = os.path.join(driversDir, "legacy.rnc")
-    itsRnc = os.path.join(os.path.join(baseDir, "its2/its20-html5.rnc"))
-    itsTypesRnc = os.path.join(os.path.join(baseDir, "its2/its20-html5-types.rnc"))  # nopep8
+    schemaSrcDir = os.path.join(buildRoot, "schema")
+    schemaBuildDir = os.path.join(buildRoot, "build", "schema")
+    ensureDirExists(schemaBuildDir)
+    html5Dir = os.path.join(schemaBuildDir, "html5")
+    ensureDirExists(html5Dir)
+    driversSrcDir = os.path.join(schemaSrcDir, ".drivers")
+    srcLegacyRnc = os.path.join(driversSrcDir, "legacy.rnc")
+    srcItsRnc = os.path.join(os.path.join(schemaSrcDir, "its2/its20-html5.rnc"))  # nopep8
+    srcItsTypesRnc = os.path.join(schemaSrcDir, "its2/its20-html5-types.rnc")  # nopep8
     buildSchemaDriverHtmlCore(html5Dir)
     buildSchemaDriverHtml5NoMicrodata(html5Dir)
     buildSchemaDriverHtml5(html5Dir)
@@ -400,24 +431,24 @@ def buildSchemaDrivers():
     buildSchemaDriverXhtml5xhtmlRDFaLite(html5Dir)
     buildSchemaDriverXhtml5htmlRDFaLite(html5Dir)
     for file in coreSchemaDriverFiles:
-        print("Copying %s to %s" % (os.path.join(driversDir, file), os.path.join(baseDir, file)))  # nopep8
-        shutil.copy(os.path.join(driversDir, file), baseDir)
-    xhtmlSourceDir = os.path.join(driversDir, "xhtml10")
-    xhtmlTargetDir = os.path.join(baseDir, "xhtml10")
+        print("Copying %s to %s" % (os.path.join(driversSrcDir, file), os.path.join(schemaBuildDir, file)))  # nopep8
+        shutil.copy(os.path.join(driversSrcDir, file), schemaBuildDir)
+    xhtmlSourceDir = os.path.join(driversSrcDir, "xhtml10")
+    xhtmlTargetDir = os.path.join(schemaBuildDir, "xhtml10")
     removeIfDirExists(xhtmlTargetDir)
     shutil.copytree(xhtmlSourceDir, xhtmlTargetDir)
     print("Copying %s to %s" % (xhtmlSourceDir, xhtmlTargetDir))
-    rdfDir = os.path.join(baseDir, "rdf")
+    rdfDir = os.path.join(schemaBuildDir, "rdf")
     removeIfDirExists(rdfDir)
     os.mkdir(rdfDir)
-    print("Copying %s to %s/rdf.rnc" % (os.path.join(driversDir, "rdf.rnc"), rdfDir))  # nopep8
-    shutil.copy(os.path.join(driversDir, "rdf.rnc"), rdfDir)
+    print("Copying %s to %s/rdf.rnc" % (os.path.join(driversSrcDir, "rdf.rnc"), rdfDir))  # nopep8
+    shutil.copy(os.path.join(driversSrcDir, "rdf.rnc"), rdfDir)
     removeIfExists(os.path.join(html5Dir, "legacy.rnc"))
     removeIfExists(os.path.join(html5Dir, "its20-html5.rnc"))
     removeIfExists(os.path.join(html5Dir, "its20-html5-types.rnc"))
-    shutil.copy(legacyRnc, html5Dir)
-    shutil.copy(itsRnc, html5Dir)
-    shutil.copy(itsTypesRnc, html5Dir)
+    shutil.copy(srcLegacyRnc, html5Dir)
+    shutil.copy(srcItsRnc, html5Dir)
+    shutil.copy(srcItsTypesRnc, html5Dir)
 
 #################################################################
 # data and functions for building schema drivers
@@ -685,81 +716,6 @@ def buildSchemaDriverXhtml5htmlRDFaLite(schemaDir):
 #################################################################
 
 
-def buildGalimatias():
-    classPath = os.pathsep.join(dependencyJarPaths())
-    buildModule(os.path.join(buildRoot, "galimatias"), "galimatias", classPath)
-
-
-def buildHtmlParser():
-    classPath = os.pathsep.join(dependencyJarPaths())
-    buildModule(os.path.join(buildRoot, "htmlparser"), "htmlparser", classPath)
-
-
-def buildLangdetect():
-    classPath = os.pathsep.join(dependencyJarPaths())
-    buildModule(os.path.join(buildRoot, "langdetect"), "langdetect", classPath)
-
-
-def buildJing():
-    os.chdir("jing-trang")
-    if os.name == 'nt':
-        runCmd([os.path.join(".", "ant.bat")])
-    else:
-        runCmd([os.path.join(".", "ant")])
-    os.chdir("..")
-
-
-def cleanJing():
-    os.chdir("jing-trang")
-    if os.name == 'nt':
-        runCmd([os.path.join(".", "ant.bat"), "clean"])
-    else:
-        runCmd([os.path.join(".", "ant"), "clean"])
-    os.chdir("..")
-
-
-def buildCssValidator():
-    os.chdir("css-validator")
-    runCmd([javaCmd, "-jar",
-           os.path.join("..", "jing-trang", "lib", "ant-launcher.jar"),
-           "jar-without-dependencies"])
-    os.chdir("..")
-
-
-def cleanCssValidator():
-    os.chdir("css-validator")
-    runCmd([javaCmd, "-jar",
-           os.path.join("..", "jing-trang", "lib", "ant-launcher.jar"),
-           "clean"])
-    os.chdir("..")
-
-
-def buildEmitters():
-    compilerFile = os.path.join(vnuSrc, "xml", "SaxCompiler.java")
-    compilerClass = "nu.validator.xml.SaxCompiler"
-    classDir = os.path.join(buildRoot, "classes")
-    ensureDirExists(classDir)
-    args = [
-        javacCmd,
-        '-g',
-        '-nowarn',
-        '-d',
-        classDir,
-        '-encoding',
-        'UTF-8',
-    ]
-    if javaTargetVersion != "":
-        args.append('--release')
-        args.append(javaTargetVersion)
-    args.append(compilerFile)
-    runCmd(args)
-    pageEmitter = os.path.join(vnuSrc, "servlet", "PageEmitter.java")
-    formEmitter = os.path.join(vnuSrc, "servlet", "FormEmitter.java")
-    runCmd([javaCmd, '-cp', classDir, compilerClass, pageTemplate, pageEmitter])  # nopep8
-    runCmd([javaCmd, '-cp', classDir, compilerClass, formTemplate, formEmitter])  # nopep8
-    removeIfDirExists(classDir)
-
-
 def dockerBuild():
     args = [
         dockerCmd,
@@ -790,6 +746,11 @@ def dockerRun():
     runCmd(args)
 
 
+def gitHubUser():
+    return subprocess.run([gitCmd, 'config', 'github.user'],
+                          capture_output=True).stdout.decode("utf-8")
+
+
 def dockerPush():
     args = [
         "echo",
@@ -799,7 +760,7 @@ def dockerPush():
         "login",
         "ghcr.io",
         "--username",
-        gitHubUser,
+        gitHubUser(),
         "--password-stdin",
     ]
     runCmd(args)
@@ -826,6 +787,7 @@ def getRunArgs(heap="$((HEAP))", _type="jar"):
         '-Dnu.validator.servlet.about-page=' + aboutPage,
         '-Dnu.validator.servlet.bind-address=' + bindAddress,
         '-Dnu.validator.servlet.allowed-address-type=' + allowedAddressType,
+        '-Dnu.validator.servlet.allow-forbidden-hosts=' + str(allowForbiddenHosts).lower(),  # nopep8
         '-Dnu.validator.servlet.deny-list=' + denyList,
         '-Dnu.validator.servlet.connection-timeout=%d' % (connectionTimeoutSeconds * 1000),  # nopep8
         '-Dnu.validator.servlet.filterfile=' + filterFile,
@@ -856,12 +818,15 @@ def getRunArgs(heap="$((HEAP))", _type="jar"):
     ]
 
     if _type == "jar":
+        classpath_item = []
+        classpath_item.append(os.pathsep.join(extrasJarPaths()))
+        classpath_item.append(vnuJar)
         args.append('-classpath')
-        args.append(os.pathsep.join(extrasJarPaths() + [vnuJar]))
+        args.append(os.pathsep.join(classpath_item))
 
     if stackSize != "":
         args.append('-Xss' + stackSize + 'k')
-        args.append('-XX:ThreadStackSize=' + stackSize + 'k')
+        args.append('-XX:ThreadStackSize=' + stackSize)
 
     if disablePromiscuousSsl:
         args.append('-Dnu.validator.xml.promiscuous-ssl=false')
@@ -896,16 +861,30 @@ def generateRunScript():
 
 
 def clean():
+    for directory in ["classes", "html", "logs"]:
+        try:
+            os.rmdir(directory)
+        except Exception:
+            pass
     removeIfDirExists(distDir)
     removeIfDirExists(distWarDir)
+    runAnt([], "clean")
 
 
 def realclean():
     clean()
-    removeIfDirExists(dependencyDir)
-    removeIfDirExists(jarsDir)
-    cleanJing()
-    cleanCssValidator()
+    runAnt([], "distclean")
+
+    buildFilesToCleanup = []
+    buildFilesToCleanup.append(os.path.join(buildRoot, "run-validator.sh"))
+    buildFilesToCleanup.append(os.path.join(buildRoot, "jars.tar.gz"))
+    buildFilesToCleanup.append(os.path.join(buildRoot, "deps.tar.gz"))
+
+    for aFile in buildFilesToCleanup:
+        try:
+            os.remove(aFile)
+        except Exception:
+            pass
 
 
 def getRuntimeDistroBasename():
@@ -929,48 +908,12 @@ class Release():
         self.vnuImageDirname = "vnu-runtime-image"
         self.vnuImageDir = os.path.join(distDir, self.vnuImageDirname)
         self.vnuModuleInfoDir = os.path.join(distDir, "vnu")
-        self.minDocPath = os.path.join(buildRoot, 'minDoc.html')
-        self.docs = ["index.html", "README.md", "CHANGELOG.md", "LICENSE"]
-        self.setClasspath()
-
-    def setClasspath(self):
-        self.classpath = os.pathsep.join([
-            antJar, antLauncherJar,
-            os.pathsep.join(dependencyJarPaths()),
-            os.path.join(jingTrangDir, "build", "jing.jar"),
-            os.path.join(jarsDir, "validator.jar"),
-            os.path.join(jarsDir, "htmlparser.jar"),
-            os.path.join(jarsDir, "galimatias.jar"),
-            os.path.join(jarsDir, "langdetect.jar"),
-            os.path.join(cssValidatorDir, "css-validator.jar"),
-        ])
-
-    def reInitDistDir(self, whichDir):
-        removeIfDirExists(whichDir)
-        ensureDirExists(whichDir)
-
-    def setVersion(self, whichDir, url=None):
-        self.version = validatorVersion
-        if self.artifactId == "jing":
-            self.version = jingVersion
-        if self.artifactId == "htmlparser":
-            self.version = htmlparserVersion
-        if self.artifactId == "cssvalidator":
-            self.version = cssvalidatorVersion
-        if self.artifactId == "galimatias":
-            self.version = galimatiasVersion
-        if self.artifactId == "langdetect":
-            self.version = langdetectVersion
-        if url == snapshotsRepoUrl:
-            self.version += "-SNAPSHOT"
-        self.writeVersion(whichDir)
-
-    def writeVersion(self, whichDir):
-        f = open(os.path.join(whichDir, "VERSION"), "w")
-        f.write(self.version)
-        f.close()
+        self.minDocPath = os.path.join(buildRoot, 'build', 'minDoc.html')
+        self.docs = ["README.md", "LICENSE"]
 
     def writeHash(self, filename, md5OrSha1):
+        if Path(filename).suffix not in {".jar", ".war", ".zip"}:
+            return
         BLOCKSIZE = 65536
         hasher = md5()
         if md5OrSha1 == "sha1":
@@ -980,9 +923,9 @@ class Release():
             while len(buf) > 0:
                 hasher.update(buf)
                 buf = f.read(BLOCKSIZE)
-        o = open("%s.%s" % (filename, md5OrSha1), 'wb')
-        o.write(hasher.hexdigest().encode())
-        o.close
+        o = open("%s.%s" % (filename, md5OrSha1), 'w')
+        o.write(f"{hasher.hexdigest()}  {os.path.basename(filename)}")
+        o.close()
 
     def writeHashes(self, whichDir):
         files = [f for f in os.listdir(whichDir)
@@ -994,61 +937,67 @@ class Release():
             self.writeHash(os.path.join(whichDir, filename), "sha1")
 
     def sign(self, whichDir):
+        if not os.path.exists(whichDir):
+            return
         files = [f for f in os.listdir(whichDir)
                  if os.path.isfile(os.path.join(whichDir, f))]
         for filename in files:
             if os.path.basename(filename) in self.docs:
                 continue
-            runCmd([gpgCmd, '--yes', '-ab', os.path.join(whichDir, filename)])
+            if Path(filename).suffix == ".asc":
+                continue
+            cmd = f"{gpgCmd} --yes -ab {os.path.join(whichDir, filename)}"
+            runCmdFromString(cmd)
 
-    def downloadMavenAntTasksJar(self):
-        url = "https://repo1.maven.org/maven2/org/apache/maven/maven-ant-tasks/2.1.3/maven-ant-tasks-2.1.3.jar"  # nopep8
-        md5sum = "7ce48382d1aa4138027a58ec2f29beda"
-        extrasDir = os.path.join(buildRoot, "extras")
-        ensureDirExists(extrasDir)
-        path = os.path.join(extrasDir, url[url.rfind("/") + 1:])
-        if not os.path.exists(path):
-            fetchUrlTo(url, path, md5sum)
-        self.setClasspath()
+    def checkMavenCentralVersion(self):
+        latest = getMavenCentralLatestVersion()
+        return latest == validatorVersion
 
-    def createArtifacts(self, jarOrWar, url=None):
-        whichDir = distDir
-        distJarOrWar = "dist"
-        if jarOrWar == "war":
-            whichDir = distWarDir
-            distJarOrWar = "dist-war"
-        self.reInitDistDir(whichDir)
-        self.setVersion(whichDir, url)
-        runCmd([javaCmd,
-                '-Ddist=' + distJarOrWar,
-                '-cp', self.classpath, 'org.apache.tools.ant.Main',
-                '-f', self.buildXml, ('%s-artifacts' % self.artifactId)])
+    def createMavenArtifacts(self):
+        ensureDirExists(distDir)
+        runAnt(shlex.split(f"-Dversion={self.version} -f {self.buildXml}"),
+               "validator-artifacts")
 
-    def createBundle(self):
-        self.downloadMavenAntTasksJar()
-        self.createArtifacts("jar")
-        print("Building %s/%s-%s-bundle.jar" %
-              (distDir, self.artifactId, self.version))
-        self.sign(distDir)
-        self.writeVersion(distDir)
-        runCmd([javaCmd,
-                '-cp', self.classpath, 'org.apache.tools.ant.Main',
-                '-f', self.buildXml, ('%s-bundle' % self.artifactId)])
+    def signMavenArtifacts(self):
+        self.sign(os.path.join(mavenArtifactsDir))
+
+    def testMavenArtifact(self):
+        print("Testing Maven artifact...")
+        testScriptPath = os.path.join(buildRoot, "tests", "maven-integration",
+                                      "test-maven-integration.sh")
+        if not os.path.exists(testScriptPath):
+            print(f"Error: Test script not found: {testScriptPath}")
+            sys.exit(1)
+
+        # Change to test directory and run the test script
+        testDir = os.path.join(buildRoot, "tests", "maven-integration")
+        originalDir = os.getcwd()
+        try:
+            os.chdir(testDir)
+            runCmd(["./test-maven-integration.sh", "local"])
+        finally:
+            os.chdir(originalDir)
+
+    def createMavenBundle(self):
+        print(f"Building {distDir}/validator-{self.version}-bundle.jar")
+        runAnt(shlex.split(f"-Dversion={self.version} -f {self.buildXml}"),
+               "validator-bundle")
 
     def createJarOrWar(self, jarOrWar):
         whichDir = distDir
-        distJarOrWar = "dist"
+        distJarOrWar = "build/dist"
         if jarOrWar == "war":
-            distJarOrWar = "dist-war"
+            distJarOrWar = "build/dist-war"
             whichDir = distWarDir
+            removeIfDirExists(os.path.join(whichDir, "war"))
             ensureDirExists(whichDir)
             os.mkdir(os.path.join(whichDir, "war"))
-        self.reInitDistDir(whichDir)
-        self.setVersion(whichDir)
-        runCmd([javaCmd,
-                '-Ddist=' + distJarOrWar,
-                '-cp', self.classpath, 'org.apache.tools.ant.Main',
-                '-f', self.buildXml, jarOrWar])
+        ensureDirExists(distDir)
+        self.version = validatorVersion
+        runAnt(['-Ddist=' + distJarOrWar,
+                '-Dversion=' + self.version,
+                '-f', self.buildXml],
+               jarOrWar)
         if jarOrWar == "jar":
             self.checkJar(call_createJarOrWar=False)
         else:
@@ -1059,16 +1008,59 @@ class Release():
             return
         if not os.path.exists(vnuJar):
             self.createJarOrWar("jar")
-        runCmd([jdepsCmd, '--ignore-missing-deps', '--generate-open-module', distDir, vnuJar])
-        f = open(os.path.join(self.vnuModuleInfoDir, "module-info.java"), 'r+')
-        lines = f.readlines()
-        lines = lines[:-2]
-        f.seek(0)
-        f.truncate()
-        f.write(''.join(lines))
-        f.write('    uses org.eclipse.jetty.http.HttpFieldPreEncoder;\n')
-        f.write('}\n')
-        f.close()
+        runCmd([jdepsCmd, '--ignore-missing-deps',
+                '--generate-open-module', distDir, vnuJar])
+
+        moduleInfoPath = os.path.join(self.vnuModuleInfoDir,
+                                      "module-info.java")
+        with open(moduleInfoPath, 'r') as f:
+            content = f.read()
+
+        content = content.replace('org.relaxng.datatype',
+                                  'nu.validator.vendor.relaxng.datatype')
+        content = content.replace('com.thaiopensource',
+                                  'nu.validator.vendor.thaiopensource')
+        content = content.replace('org.iso_relax',
+                                  'nu.validator.vendor.iso_relax')
+        content = content.replace('jp.gr.xml.relax',
+                                  'nu.validator.vendor.jp.gr.xml.relax')
+
+        # Handle duplicate “provides” declarations
+        lines = content.split('\n')
+        filteredLines = []
+        skipUntilSemicolon = False
+        seenProvides = set()
+
+        for line in lines:
+            if line.strip().startswith('provides '):
+                # Extract the service interface name
+                serviceMatch = line.strip().split(' with')[0].replace('provides ', '').strip()  # nopep8
+                if serviceMatch in seenProvides:
+                    # This is a duplicate - skip this “provides” block
+                    skipUntilSemicolon = True
+                    continue
+                else:
+                    seenProvides.add(serviceMatch)
+                    filteredLines.append(line)
+            elif skipUntilSemicolon:
+                # Skip lines til we hit semicolon ending the “provides” block
+                if line.strip().endswith(';'):
+                    skipUntilSemicolon = False
+                continue
+            else:
+                filteredLines.append(line)
+
+        # Remove the closing brace and last “provides” block, if needed
+        while filteredLines and (filteredLines[-1].strip() == '}' or
+                                 filteredLines[-1].strip() == ''):
+            filteredLines.pop()
+
+        # Write back the modified content
+        with open(moduleInfoPath, 'w') as f:
+            f.write('\n'.join(filteredLines))
+            f.write('\n    uses org.eclipse.jetty.http.HttpFieldPreEncoder;\n')
+            f.write('    uses javax.json.spi.JsonProvider;\n')
+            f.write('}\n')
         runCmd([javacCmd, '-nowarn', '--patch-module', 'vnu=' + vnuJar,
                 os.path.join(distDir, 'vnu', 'module-info.java')])
         runCmd([jarCmd, '--update',
@@ -1080,83 +1072,26 @@ class Release():
         runCmd([jlinkCmd, '--launcher',
                 'vnu=vnu/nu.validator.client.SimpleCommandLineValidator',
                 '--strip-debug', '--no-header-files', '--no-man-pages',
-                '--compress=2',
+                '--compress=zip-6',
                 '--output', self.vnuImageDir, '--module-path', vnuJar,
                 '--add-modules', 'jdk.crypto.ec',
                 '--add-modules', 'vnu'])
         self.checkRuntimeImage()
         os.chdir(distDir)
         removeIfExists(self.runtimeDistroFile)
-        for fname in {"CHANGELOG.md", "LICENSE", "README.md", "index.html"}:
+        for fname in {"LICENSE", "README.md"}:
             shutil.copy(os.path.join("..", "..", fname), self.vnuImageDirname)
         shutil.make_archive(self.runtimeDistroBasename, 'zip', ".",
                             self.vnuImageDirname)
         os.chdir(os.path.join('..', '..'))
         self.writeHashes(distDir)
 
-    def createDistribution(self, jarOrWar, isNightly=False):
-        whichDir = distDir
-        if jarOrWar == "war":
-            whichDir = distWarDir
-        self.setVersion(whichDir)
-        if isNightly:
-            self.version = "nightly.%s" % time.strftime('%Y-%m-%d')
-        self.createJarOrWar(jarOrWar)
-        self.prepareDist(jarOrWar)
-
-    def prepareDist(self, jarOrWar):
-        whichDir = distDir
-        distJarOrWar = "dist"
-        if jarOrWar == "war":
-            whichDir = distWarDir
-            distJarOrWar = "dist-war"
-        self.removeExtras(whichDir)
-        print("Building %s/vnu.%s_%s.zip" % (distWarDir, jarOrWar,
-                                             self.version))
-        if "nightly" not in self.version:
-            for filename in self.docs:
-                shutil.copy(os.path.join(buildRoot, filename), whichDir)
-        os.chdir("build")
-        self.distroFile = os.path.join("vnu.%s_%s.zip" % (jarOrWar,
-                                                          self.version))
-        removeIfExists(self.distroFile)
-        zf = zipfile.ZipFile(self.distroFile, "w")
-        for dirname, subdirs, files in os.walk(distJarOrWar):
-            zf.write(dirname)
-        for filename in files:
-            zf.write(os.path.join(dirname, filename))
-        zf.close()
-        shutil.move(self.distroFile, distJarOrWar)
-        os.chdir("..")
-        self.writeHashes(whichDir)
-        self.sign(whichDir)
-
-    def createOrUpdateGithubData(self):
-        runCmd([gitCmd, 'tag', '-s', '-f', ('%s' % validatorVersion)])
-        args = [
-            "-u",
-            "validator",
-            "-r",
-            "validator",
-            "-t",
-            validatorVersion,
-        ]
-        devnull = open(os.devnull, 'wb')
-        infoArgs = [ghRelCmd, 'info'] + args
-        print(" ".join(infoArgs))
-        if subprocess.call(infoArgs, stdout=devnull, stderr=subprocess.STDOUT):
-            runCmd([ghRelCmd, 'release', '-p'] + args)
-        else:
-            runCmd([ghRelCmd, 'delete'] + args)
-            runCmd([ghRelCmd, 'release', '-p'] + args)
-        devnull.close()
-        args.append('-n')
-        args.append(releaseDate)
-        args.append('-d')
-        args.append(os.path.join(buildRoot, "WHATSNEW.md"))
-        runCmd([ghRelCmd, 'edit', '-p'] + args)
-
-    def createPackageJson(self, packageJson):
+    def updatePackageJsonAndReadme(self):
+        packageJson = os.path.join(buildRoot, "package.json")
+        removeIfExists(os.path.join(buildRoot, "README.md~"))
+        readMe = os.path.join(buildRoot, "README.md")
+        npmMd = os.path.join(buildRoot, "npm.md")
+        shutil.copy(npmMd, readMe)
         with open(packageJson, 'r') as original:
             copy = json.load(original)
         copy['version'] = validatorVersion
@@ -1195,168 +1130,79 @@ class Release():
         npmReadme.close()
 
     def removeExtras(self, whichDir):
-        removeIfExists(os.path.join(whichDir, "VERSION"))
         sigsums = re.compile(r"^.+\.asc$|^.+\.md5$|.+\.sha1$")
         for filename in findFiles(whichDir):
             if (os.path.basename(filename) in self.docs or
                     sigsums.match(filename)):
                 removeIfExists(filename)
 
-    def uploadMavenToGitHub(self):
-        self.setVersion(distDir)
-        print("version: " + self.version)
-        self.downloadMavenAntTasksJar()
-        self.createArtifacts("jar")
-        basename = "%s-%s" % (self.artifactId, self.version)
-        mvnArgs = [
-            mvnCmd,
-            "-DaltDeploymentRepository=github::default::https://maven.pkg.github.com/validator/validator",  # nopep8
-            "-f",
-            "%s.pom" % os.path.join(distDir, basename),
-            "gpg:sign-and-deploy-file",
-            "-Dgpg.executable=%s" % gpgCmd,
-            "-DrepositoryId=github",
-            "-Durl=%s" % 'https://maven.pkg.github.com/validator/validator',
-            "-DpomFile=%s.pom" % basename,
-            "-Dfile=%s.jar" % basename,
-            "-Djavadoc=%s-javadoc.jar" % basename,
-            "-Dsources=%s-sources.jar" % basename,
-        ]
-        runCmd(mvnArgs)
-
-    def uploadToCentral(self, url):
-        self.downloadMavenAntTasksJar()
-        self.createArtifacts("jar", url)
-        basename = "%s-%s" % (self.artifactId, self.version)
-        mvnArgs = [
-            mvnCmd,
-            "-f",
-            "%s.pom" % os.path.join(distDir, basename),
-            "gpg:sign-and-deploy-file",
-            "-Dgpg.executable=%s" % gpgCmd,
-            "-DrepositoryId=ossrh",
-            "-Durl=%s" % url,
-            "-DpomFile=%s.pom" % basename,
-            "-Dfile=%s.jar" % basename,
-            "-Djavadoc=%s-javadoc.jar" % basename,
-            "-Dsources=%s-sources.jar" % basename,
-        ]
-        runCmd(mvnArgs)
-        if url != stagingRepoUrl:
+    def uploadToMavenCentral(self):
+        if self.checkMavenCentralVersion():
             return
-        mvnArgs = [
-            mvnCmd,
-            "-f",
-            "%s.pom" % os.path.join(distDir, basename),
-            "org.sonatype.plugins:nexus-staging-maven-plugin:rc-list",
-            "-DnexusUrl=https://oss.sonatype.org/",
-            "-DserverId=ossrh",
-        ]
-        output = subprocess.check_output(mvnArgs)
-        for line in output.decode('utf-8').split('\n'):
-            if "nuvalidator" in line:
-                stagingRepositoryId = "nuvalidator-" + line[19:23]
-                mvnArgs = [
-                    mvnCmd,
-                    "-f",
-                    "%s.pom" % os.path.join(distDir, basename),
-                    "org.sonatype.plugins:nexus-staging-maven-plugin:rc-close",     # nopep8
-                    "-DnexusUrl=https://oss.sonatype.org/",
-                    "-DserverId=ossrh",
-                    "-DautoReleaseAfterClose=true",
-                    "-DstagingRepositoryId=" + stagingRepositoryId
-                ]
-                runCmd(mvnArgs)
-                mvnArgs = [
-                    mvnCmd,
-                    "-f",
-                    "%s.pom" % os.path.join(distDir, basename),
-                    "org.sonatype.plugins:nexus-staging-maven-plugin:rc-release",   # nopep8
-                    "-DnexusUrl=https://oss.sonatype.org/",
-                    "-DserverId=ossrh",
-                    "-DautoReleaseAfterClose=true",
-                    "-DstagingRepositoryId=" + stagingRepositoryId
-                ]
-                runCmd(mvnArgs)
+        self.createMavenBundle()
+        cmd = f"""{curlCmd} --request POST \
+             --form "bundle=@{distDir}/validator-{self.version}-bundle.jar" \
+             --header "Authorization: Bearer {os.getenv("MAVEN_USER_TOKEN")}" \
+             "https://central.sonatype.com/api/v1/publisher/upload?name=validator-{self.version}&publishingType=AUTOMATIC"
+             """  # nopep8
+        runCmdFromString(cmd)
 
-    def uploadToHeroku(self):
-        self.createJarOrWar("war")
-        runCmd([herokuCmd,
-                'deploy:war', '--war',
-                os.path.join(distWarDir, "vnu.war"), '--app', 'vnu'])
-
-    def uploadToGithub(self, jarOrWar):
-        whichDir = distDir
-        if jarOrWar == "war":
-            whichDir = distWarDir
-        for filename in findFiles(whichDir):
-            if "zip" in filename:
-                args = [
-                    ghRelCmd,
-                    'upload',
-                    "-u",
-                    "validator",
-                    "-r",
-                    "validator",
-                    "-t",
-                    validatorVersion,
-                    "-n",
-                    os.path.basename(filename),
-                    "-f",
-                    filename,
-                ]
-                runCmd(args)
+    def installNpm(self,):
+        print("npmjs package version: " + self.version)
+        self.updatePackageJsonAndReadme()
+        runCmdFromString(f"{npmCmd} install --save")
+        runCmdFromString(f"{npmCmd} link vnu-jar")
+        runCmdFromString(f"{npmCmd} link")
+        runCmdFromString(f"{gitCmd} checkout package.json")
+        runCmdFromString(f"{gitCmd} checkout README.md")
 
     def uploadNpm(self, tag=None):
-        runCmd([gitCmd, 'tag', '-s', '-f', ('%s' % validatorVersion)])
-        removeIfExists(os.path.join(buildRoot, "README.md~"))
-        removeIfExists(os.path.join(buildRoot, "CHANGELOG.md~"))
-        readMe = os.path.join(buildRoot, "README.md")
-        with open(readMe, 'r') as f:
-            readMeCopy = f.read()
-        self.createNpmReadme(readMe, readMeCopy)
-        packageJson = os.path.join(buildRoot, "package.json")
-        with open(packageJson, 'r') as f:
-            packageJsonCopy = f.read()
-        self.createPackageJson(packageJson)
+        self.version = validatorVersion
+        url = f"https://registry.npmjs.org/vnu-jar/{self.version}"
+        try:
+            with urlopen(url):
+                print(f"npmjs package version {self.version} already exists. Skipping.")  # nopep8
+                return
+        except HTTPError as e:
+            if e.code != 404:
+                raise
+        if not os.path.exists(vnuJar):
+            print(f"Error: {vnuJar} not found.")
+            sys.exit(1)
+        # Verify the jar file is valid (not a placeholder or error page)
+        jar_size = os.path.getsize(vnuJar)
+        if jar_size < 1000000:
+            print(f"Error: {vnuJar} is too small ({jar_size} bytes), likely corrupted!")  # nopep8
+            sys.exit(1)
+        print(f"vnu.jar size: {jar_size} bytes")
+        self.updatePackageJsonAndReadme()
         if tag:
-            runCmd([npmCmd, 'publish', '--tag', tag])
+            runCmdFromString(
+                    f"{npmCmd} publish --provenance --access public --tag {tag}")  # nopep8
         else:
-            runCmd([npmCmd, 'publish'])
-        self.createGitHubPackageJson(packageJson)
-        if tag:
-            runCmd([npmCmd, 'publish', '--tag', tag])
-        else:
-            runCmd([npmCmd, 'publish'])
-        with open(readMe, 'w') as f:
-            f.write(readMeCopy)
-        with open(packageJson, 'w') as f:
-            f.write(packageJsonCopy)
-
-    def uploadToReleasesHost(self, jarOrWar, isNightly=False):
-        whichDir = distDir
-        if jarOrWar == "war":
-            whichDir = distWarDir
-        path = "%s/%s" % (releasesPath, jarOrWar)
-        if isNightly:
-            path = "%s/%s" % (nightliesPath, jarOrWar)
-        for filename in findFiles(whichDir):
-            runCmd([scpCmd, filename, ('%s:%s' % (releasesHost, path))])
+            runCmdFromString(
+                    f"{npmCmd} publish --provenance --access public")
+        runCmdFromString(f"{gitCmd} checkout package.json")
+        runCmdFromString(f"{gitCmd} checkout README.md")
 
     def checkJar(self, call_createJarOrWar=True):
         if not os.path.exists(vnuJar):
             if call_createJarOrWar:
                 self.createJarOrWar("jar")
-        with open(self.minDocPath, 'w') as f:
-            f.write(miniDoc)
+
+        args = [javaCmd]
+        if stackSize != "":
+            args.append('-Xss' + stackSize + 'k')
+
+        args.append('-jar')
+        args.append(vnuJar)
+
         formats = ["gnu", "xml", "json", "text"]
         for _format in formats:
-            runCmd([javaCmd, '-jar', vnuJar, '--format', _format,
-                   self.minDocPath])
+            runCmd(args + ['--format', _format, self.minDocPath])
         # also make sure it works even w/o --format value; returns gnu output
-        runCmd([javaCmd, '-jar', vnuJar, self.minDocPath])
-        runCmd([javaCmd, '-jar', vnuJar, '--version'])
-        os.remove(self.minDocPath)
+        runCmd(args + [self.minDocPath])
+        runCmd(args + ['--version'])
 
     def checkRuntimeImage(self):
         if javaEnvVersion < 9:
@@ -1364,18 +1210,14 @@ class Release():
         vnuRunScript = os.path.join(self.vnuImageDir, 'bin', 'vnu')
         if os.path.exists(os.path.join(self.vnuImageDir, 'bin', 'vnu.bat')):
             vnuRunScript = os.path.join(self.vnuImageDir, 'bin', 'vnu.bat')
-        with open(self.minDocPath, 'w') as f:
-            f.write(miniDoc)
         formats = ["gnu", "xml", "json", "text"]
         for _format in formats:
             runCmd([vnuRunScript, '--format', _format, self.minDocPath])
         # also make sure it works even w/o --format value; returns gnu output
         runCmd([vnuRunScript, self.minDocPath])
         runCmd([vnuRunScript, '--version'])
-        os.remove(self.minDocPath)
 
-    def checkUrlWithService(self, url, daemon):
-        time.sleep(15)
+    def checkUrlWithService(self, url):
         print("Checking %s" % url)
         try:
             print(urlopen(url).read())
@@ -1385,8 +1227,6 @@ class Release():
         except URLError as e:
             print(e.reason)
             sys.exit(1)
-        time.sleep(5)
-        daemon.terminate()
 
     def checkServiceWithJar(self, url):
         if not os.path.exists(os.path.join(buildRoot, "jars")):
@@ -1394,9 +1234,17 @@ class Release():
         if not os.path.exists(vnuJar):
             self.createJarOrWar("jar")
         print("Checking service using jar...")
+        if isServiceUp(False):
+            print("Service is already/still running at " + bindAddress +
+                  ":" + portNumber)
+            print("Stop it first, then retry.")
+            sys.exit(1)
         args = getRunArgs(str(int(heapSize) * 1024))
         daemon = subprocess.Popen([javaCmd, ] + args)
-        self.checkUrlWithService(url, daemon)
+        waitUntilServiceIsReady()
+        self.checkUrlWithService(url)
+        daemon.terminate()
+        waitUntilServiceIsDown()
 
     def checkServiceWithRuntimeImage(self, url):
         if javaEnvVersion < 9:
@@ -1405,27 +1253,28 @@ class Release():
                 or not os.path.exists(os.path.join(distDir,
                                                    self.runtimeDistroFile)):
             self.createRuntimeImage()
+        print("Checking service using runtime image...")
+        if isServiceUp(False):
+            print("Service is already/still running at " + bindAddress +
+                  ":" + portNumber)
+            print("Stop it first, then retry.")
+            sys.exit(1)
         args = getRunArgs(str(int(heapSize) * 1024), "image")
         daemon = subprocess.Popen([os.path.join(distDir, self.vnuImageDirname,
                                                 "bin", "java")] + args)
-        self.checkUrlWithService(url, daemon)
+        waitUntilServiceIsReady()
+        self.checkUrlWithService(url)
+        daemon.terminate()
+        waitUntilServiceIsDown()
 
     def checkService(self):
-        doc = miniDoc.replace(" ", "%20")
+        with open(self.minDocPath, "r") as file:
+            doc = file.read()
+        doc = doc.rstrip().replace(" ", "%20")
         query = "?out=gnu&doc=data:text/html;charset=utf-8,%s" % doc
         url = "http://127.0.0.1:%s/%s" % (portNumber, query)
         self.checkServiceWithJar(url)
         self.checkServiceWithRuntimeImage(url)
-
-    def buildValidator(self):
-        classPath = os.pathsep.join(
-            dependencyJarPaths() +
-            jarNamesToPaths(["galimatias", "htmlparser", "langdetect"]) +
-            cssValidatorJarPath() +
-            jingJarPath())
-        buildEmitters()
-        buildModule(buildRoot, "validator", classPath)
-        self.createJarOrWar("jar")
 
     def runValidator(self):
         if not os.path.exists(vnuJar):
@@ -1434,25 +1283,528 @@ class Release():
         args = getRunArgs(str(int(heapSize) * 1024))
         execCmd(javaCmd, args)
 
-    def runTests(self):
+    def runUnitTests(self):
         if not os.path.exists(vnuJar):
             self.createJarOrWar("jar")
-        args = ["tests/messages.json"]
-        className = "nu.validator.client.TestRunner"
-        runCmd([javaCmd, '-classpath', vnuJar, className] + args)
+        # List of unit test classes to run
+        testClasses = [
+            'nu.validator.messages.test.MessageEmitterAdapterTest',
+            'nu.validator.collections.test.SortedSetTest',
+            'nu.validator.io.test.DataUriTest',
+            'nu.validator.io.test.SystemIdIOExceptionTest',
+            'nu.validator.checker.test.SpeculationRulesCheckerTest',
+            'nu.validator.checker.test.CspEnforcementCheckerTest',
+            'nu.validator.checker.test.AttributeUtilTest',
+            'nu.validator.datatype.test.DatatypeTest',
+            'nu.validator.checker.test.LocatorImplTest',
+            'nu.validator.checker.test.NormalizationCheckerTest',
+            'nu.validator.xml.test.CharacterUtilTest',
+            'nu.validator.xml.test.BaseUriTrackerTest',
+            'nu.validator.source.test.SourceCodeTest',
+        ]
+        for testClass in testClasses:
+            print(f"\nRunning {testClass}...")
+            args = [javaCmd]
+            if stackSize != "":
+                args.append('-Xss' + stackSize + 'k')
+            args.append('-classpath')
+            args.append(vnuJar)
+            args.append(testClass)
+            runCmd(args)
+
+    def runTests(self):
+        self.runCoverageTests()
+
+        svgTestArgs = [javaCmd, '-jar', vnuJar,
+                       "--also-check-svg", "--Werror"]
+        svgTestArgs.append(os.path.join(
+            buildRoot, "tests", "html", "attributes",
+            "lang", "missing-lang-attribute-non-html-isvalid.svg"))
+        svgTestArgs.append(os.path.join(
+            buildRoot, "tests", "svg",
+            "stoplight-titles-compatibility.svg"))
+        runCmd(svgTestArgs)
+        cssTestArgs = [javaCmd, '-jar', vnuJar, "--skip-non-css"]
+        cssTestArgs.append(os.path.join(buildRoot, "tests", "css"))
+        runCmd(cssTestArgs)
+        docbookTestArgs = [javaCmd, '-jar', vnuJar,
+                           "--schema",
+                           "file:resources/docbook.rng",
+                           "--xml"]
+        # Test valid DocBook document; expect no output/messages/errors
+        testdoc = [os.path.join("tests", "schema-validation",
+                                "docbook-valid.xml")]
+        runCmd(docbookTestArgs + testdoc)
+        # Test invalid DocBook document; expect output (an error message)
+        testdoc = [os.path.join("tests", "schema-validation",
+                                "docbook-invalid.xml")]
+        cmd = docbookTestArgs + testdoc
+        print(shlex.join(cmd))
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8")
+        if result.returncode == 0:
+            print("Expected validation errors in output, but found none.")
+            sys.exit(2)
+        # Check for expected error patterns in output (stdout or stderr)
+        output = result.stdout + result.stderr
+        if "error:" not in output.lower():
+            print("Expected validation errors in output, but found none.")
+            sys.exit(2)
+
+    def runSpecTests(self):
+        if platform.system() == 'Windows':
+            # Something about either the createRuntimeImage() or execCmd()
+            # below doesn’t work as expected in a Windows environment.
+            return
+        if not os.path.exists(vnuCmd):
+            self.createRuntimeImage()
+        specTestArgs = ["--verbose"]
+        specTestArgs.extend(["--filterpattern",
+                             ".*which is less than the column count.*"])
+        specTestArgs.extend(["--filterpattern",
+                             ".*Bad value “directory” for attribute “role”.*"])
+        specTestArgs.extend([
+            "https://html.spec.whatwg.org/",
+            "https://dom.spec.whatwg.org/",
+            "https://encoding.spec.whatwg.org/",
+            "https://fetch.spec.whatwg.org/",
+            "https://infra.spec.whatwg.org/",
+            "https://notifications.spec.whatwg.org/",
+            "https://streams.spec.whatwg.org/",
+            "https://url.spec.whatwg.org/",
+            "https://urlpattern.spec.whatwg.org/",
+            "https://webidl.spec.whatwg.org/",
+            ])
+        execCmd(vnuCmd, specTestArgs, True)
+        legacyEncodingCoverageTestArgs = ["--verbose"]
+        legacyEncodingCoverageTestArgs.extend(
+                ["--filterpattern",
+                 ".*Text run is not in Unicode Normalization Form C.*"])
+        legacyEncodingCoverageTestArgs.extend(
+                ["--filterpattern",
+                 ".*This document appears to be written in.*"])
+        legacyEncodingCoverageTestArgs.extend(
+                ["--filterpattern",
+                 ".*Document uses the Unicode Private Use Area.*"])
+        legacyEncodingCoverageTestArgs.extend([
+            "https://encoding.spec.whatwg.org/macintosh-bmp.html",
+            "https://encoding.spec.whatwg.org/shift_jis.html",
+            ])
+        execCmd(vnuCmd, legacyEncodingCoverageTestArgs, True)
+
+    def runE2eTests(self, jacocoExecFile=None,
+                    extraCoverageRequests=False):
+        if not os.path.exists(vnuJar):
+            self.createJarOrWar("jar")
+        if isServiceUp(False):
+            print("Service is already/still running at " + bindAddress +
+                  ":" + portNumber)
+            print("Stop it first, then retry.")
+            sys.exit(1)
+        args = getRunArgs(str(int(heapSize) * 1024))
+        if jacocoExecFile:
+            agentArg = ("-javaagent:%s=destfile=%s,includes=nu.validator.*"
+                        % (jacocoAgentJar, jacocoExecFile))
+            args.insert(0, agentArg)
+        # Use the servlet's control-port mechanism for graceful shutdown.
+        # On Windows, Popen.terminate() calls TerminateProcess which
+        # kills the JVM without running shutdown hooks; JaCoCo needs
+        # the hook to write coverage .exec data.
+        import socket as socketmod
+        with socketmod.socket() as _s:
+            _s.bind(('127.0.0.1', 0))
+            stopPort = _s.getsockname()[1]
+        args.append(str(stopPort))
+        daemon = subprocess.Popen([javaCmd, ] + args)
+        waitUntilServiceIsReady()
+        try:
+            playwrightCmd = ["pnpm", "exec", "playwright", "test",
+                             "--project=chromium"]
+            print(shlex.join(playwrightCmd))
+            subprocess.check_call(playwrightCmd,
+                                  shell=(platform.system() == 'Windows'))
+            if extraCoverageRequests:
+                self._makeCoverageRequests()
+        finally:
+            try:
+                with socketmod.create_connection(
+                        ("127.0.0.1", stopPort), timeout=10) as sock:
+                    sock.settimeout(60)
+                    sock.recv(1)
+                daemon.wait(timeout=30)
+            except Exception:
+                daemon.terminate()
+            waitUntilServiceIsDown()
+
+    def _makeCoverageRequests(self):
+        """Hit additional servlet endpoints to increase coverage."""
+        import gzip as gzipmod
+        from urllib.request import urlopen, Request
+        from urllib.parse import quote
+        connectAddr = "127.0.0.1" if bindAddress == "0.0.0.0" else bindAddress
+        baseUrl = "http://%s:%s/" % (connectAddr, portNumber)
+        testDoc = ("<!DOCTYPE html><html lang=en><title>test</title>"
+                   "<body><h1>Hello</h1><h2>World</h2>"
+                   "<p>Test paragraph.</p>"
+                   "<img src=x alt=test>")
+        docParam = "data:text/html," + quote(testDoc)
+        xhtmlDoc = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    "<!DOCTYPE html>"
+                    "<html xmlns=\"http://www.w3.org/1999/xhtml\">"
+                    "<head><title>test</title></head>"
+                    "<body><p>Test.</p></body></html>")
+        xhtmlWithMathDoc = (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\">"
+            "<head><title>test</title></head>"
+            "<body><p>Test</p>"
+            "<math xmlns=\"http://www.w3.org/1998/Math/MathML\">"
+            "<mi>x</mi><mo>=</mo><mn>1</mn></math>"
+            "</body></html>")
+        cssDoc = "body { color: red; }"
+        svgDoc = ("<svg xmlns=\"http://www.w3.org/2000/svg\">"
+                  "<title>test</title><rect width=\"1\" height=\"1\"/>"
+                  "</svg>")
+        getRequests = [
+            # Output formats (exercises MessageEmitter subclasses)
+            "?doc=%s&out=json" % docParam,
+            "?doc=%s&out=xml" % docParam,
+            "?doc=%s&out=gnu" % docParam,
+            "?doc=%s&out=text" % docParam,
+            # JSONP callback path
+            "?doc=%s&out=json&callback=onResult" % docParam,
+            # Outline (exercises OutlineBuildingXMLReaderWrapper,
+            # XhtmlOutlineEmitter)
+            "?doc=%s&showoutline=yes" % docParam,
+            # Source display (exercises XhtmlSourceHandler)
+            "?doc=%s&showsource=yes" % docParam,
+            # Source display + xml/json output (exercises
+            # XmlSourceHandler, JsonSourceHandler)
+            "?doc=%s&out=xml&showsource=yes" % docParam,
+            "?doc=%s&out=json&showsource=yes" % docParam,
+            # Image report
+            "?doc=%s&showimagereport=yes" % docParam,
+            # Parse tree endpoint with content param (exercises
+            # ParseTreePrinter, TreeDumpContentHandler,
+            # ListErrorHandler) — uses content= to bypass URL
+            # resolution, which PrudentHttpEntityResolver can’t
+            # handle for data: URIs
+            "parsetree/?content=%s" % quote(testDoc),
+            "parsetree/?content=%s&parser=xml" % quote(
+                xhtmlDoc),
+            # html5 path (exercises Html5ConformanceCheckerTransaction,
+            # Html5FormEmitter)
+            "html5/?doc=%s" % docParam,
+            "html5/?doc=%s&out=json" % docParam,
+            # html5 path with charset/nsfilter params (exercises
+            # CharsetEmitter, NsFilterEmitter)
+            "html5/?doc=%s&charset=utf-8&nsfilter=" % docParam,
+            # Statistics page (exercises Statistics, StatsEmitter)
+            "stats.html",
+        ]
+        print("\nMaking extra GET coverage requests...")
+        for path in getRequests:
+            url = baseUrl + path
+            print("  GET %s" % url[:120])
+            try:
+                req = Request(url)
+                req.add_header("User-Agent", "coverage-test")
+                resp = urlopen(req, timeout=30)
+                resp.read()
+                resp.close()
+            except Exception as e:
+                print("    (response: %s)" % e)
+
+        # POST requests for content types that need direct upload
+        postRequests = [
+            # XHTML/XML (exercises BufferingRootNamespaceSniffer,
+            # namespace handling)
+            (baseUrl, "application/xhtml+xml",
+             xhtmlDoc.encode("utf-8"), None),
+            # XHTML with explicit schema (exercises
+            # RootNamespaceSniffer — only instantiated when a
+            # schema is specified, bypassing BufferingRootNamespace
+            # Sniffer)
+            (baseUrl + "?schema="
+             + quote("http://s.validator.nu/xhtml5.rnc"),
+             "application/xhtml+xml",
+             xhtmlDoc.encode("utf-8"), None),
+            # XHTML with nsfilter (exercises
+            # NamespaceDroppingXMLReaderWrapper)
+            (baseUrl + "?nsfilter="
+             + quote("http://www.w3.org/1998/Math/MathML"),
+             "application/xhtml+xml",
+             xhtmlWithMathDoc.encode("utf-8"), None),
+            # CSS (exercises CSS validation path)
+            (baseUrl, "text/css", cssDoc.encode("utf-8"), None),
+            # SVG (exercises SVG validation path)
+            (baseUrl, "image/svg+xml",
+             svgDoc.encode("utf-8"), None),
+        ]
+        # Documents with errors to exercise error-formatting code
+        # in MessageEmitterAdapter
+        errorDoc = (
+            "<!DOCTYPE html><html lang=en><title>test</title>"
+            "<body><div role=banana>x</div>"
+            "<span><div>block in inline</div></span>"
+            "<img>"
+            "<input type=text required value=''>"
+            "<label for=x><label for=y>nested</label></label>"
+            "<select><option value=''>pick<option value=''>dup</select>"
+            "<p><table><tr><td>table in p</td></tr></table>"
+        )
+        errDocParam = "data:text/html," + quote(errorDoc)
+        # GET with error doc in various output formats
+        for outFmt in ["html", "json", "xml", "gnu", "text"]:
+            getRequests.append("?doc=%s&out=%s" % (errDocParam, outFmt))
+        # GET with error doc + showsource + showoutline
+        getRequests.append(
+            "?doc=%s&showsource=yes&showoutline=yes" % errDocParam)
+        print("\nMaking extra POST coverage requests...")
+        for url, contentType, body, encoding in postRequests:
+            label = contentType
+            if encoding:
+                label += " (%s)" % encoding
+            print("  POST %s [%s]" % (url[:120], label))
+            try:
+                req = Request(url, data=body)
+                req.add_header("Content-Type", contentType)
+                req.add_header("User-Agent", "coverage-test")
+                if encoding:
+                    req.add_header("Content-Encoding", encoding)
+                resp = urlopen(req, timeout=30)
+                resp.read()
+                resp.close()
+            except Exception as e:
+                print("    (response: %s)" % e)
+
+    def runCoverageTests(self):
+        import csv
+        import glob as globmod
+
+        if not os.path.exists(vnuJar):
+            self.createJarOrWar("jar")
+        if not os.path.exists(jacocoAgentJar):
+            print("JaCoCo agent JAR not found: %s" % jacocoAgentJar)
+            print("Run 'python checker.py dldeps' first.")
+            sys.exit(1)
+        if not os.path.exists(jacocoCliJar):
+            print("JaCoCo CLI JAR not found: %s" % jacocoCliJar)
+            print("Run 'python checker.py dldeps' first.")
+            sys.exit(1)
+
+        # Clean/create coverage directory
+        if os.path.exists(coverageDir):
+            shutil.rmtree(coverageDir)
+        os.makedirs(coverageDir)
+
+        testClasses = [
+            'nu.validator.messages.test.MessageEmitterAdapterTest',
+            'nu.validator.collections.test.SortedSetTest',
+            'nu.validator.io.test.DataUriTest',
+            'nu.validator.io.test.SystemIdIOExceptionTest',
+            'nu.validator.checker.test.SpeculationRulesCheckerTest',
+            'nu.validator.checker.test.CspEnforcementCheckerTest',
+            'nu.validator.checker.test.AttributeUtilTest',
+            'nu.validator.datatype.test.DatatypeTest',
+            'nu.validator.checker.test.LocatorImplTest',
+            'nu.validator.checker.test.NormalizationCheckerTest',
+            'nu.validator.xml.test.CharacterUtilTest',
+            'nu.validator.xml.test.BaseUriTrackerTest',
+            'nu.validator.source.test.SourceCodeTest',
+        ]
+
+        # Run unit tests with JaCoCo agent
+        for i, testClass in enumerate(testClasses):
+            print("\nRunning %s with coverage..." % testClass)
+            execFile = os.path.join(coverageDir, "unit-%d.exec" % i)
+            agentArg = "-javaagent:%s=destfile=%s,includes=nu.validator.*" % (
+                jacocoAgentJar, execFile)
+            args = [javaCmd, agentArg]
+            if stackSize != "":
+                args.append('-Xss' + stackSize + 'k')
+            args.append('-classpath')
+            args.append(vnuJar)
+            args.append(testClass)
+            runCmd(args)
+
+        # Run SimpleCommandLineValidator with JaCoCo agent
+        print("\nRunning SimpleCommandLineValidator with coverage...")
+        aboutHtml = os.path.join(buildRoot, 'site', 'nu-about.html')
+        svgFile = os.path.join(buildRoot, 'tests', 'svg',
+                               'stoplight-titles-compatibility.svg')
+        cssDir = os.path.join(buildRoot, 'tests', 'css',
+                              'succeeds-with-or-without-bom')
+        htmlDir = os.path.join(buildRoot, 'tests', 'html',
+                               'elements', 'meter')
+        xhtmlFile = os.path.join(buildRoot, 'tests', 'xhtml',
+                                  'elements', 'meter', '002-isvalid.xhtml')
+        svgDir = os.path.join(buildRoot, 'tests', 'svg')
+        filterFile = os.path.join(coverageDir, 'test-filter.txt')
+        with open(filterFile, 'w') as ff:
+            ff.write('placeholder-filter-pattern\n')
+        cssFile = os.path.join(buildRoot, 'tests', 'css',
+                               'succeeds-with-or-without-bom',
+                               '1', 'without-bom.css')
+        cliRuns = [
+            # JSON + check css/svg (exercises json emitter, css/svg flags)
+            ('cli-json', ['--format', 'json', '--also-check-css',
+                          '--also-check-svg', aboutHtml,
+                          os.path.join(buildRoot, 'tests', 'html',
+                                       'elements', 'custom',
+                                       'invalid-name-novalid.html')]),
+            # GNU + verbose (exercises gnu emitter, verbose output)
+            ('cli-gnu', ['--format', 'gnu', '--verbose', aboutHtml]),
+            # XML format with invalid doc (exercises XML error emitter)
+            ('cli-xml', ['--format', 'xml', aboutHtml,
+                         os.path.join(buildRoot, 'tests', 'html',
+                                      'elements', 'custom',
+                                      'invalid-name-novalid.html')]),
+            # Text format with invalid doc (exercises error location formatting)
+            ('cli-text', ['--format', 'text', aboutHtml,
+                          os.path.join(buildRoot, 'tests', 'html',
+                                       'elements', 'custom',
+                                       'invalid-name-novalid.html')]),
+            # SVG file (exercises --svg path)
+            ('cli-svg', ['--also-check-svg', svgFile]),
+            # CSS directory (exercises --skip-non-css + directory mode)
+            ('cli-css', ['--skip-non-css', cssDir]),
+            # HTML directory mode (exercises recursive traversal)
+            ('cli-dir', ['--format', 'json', htmlDir]),
+            # No language detection
+            ('cli-nolang', ['--no-langdetect', aboutHtml]),
+            # Filter pattern
+            ('cli-filter', ['--filterpattern', '.', aboutHtml]),
+            # --errors-only (exercises errorsOnly flag + datatype.warn)
+            ('cli-erronly', ['--errors-only', aboutHtml]),
+            # --exit-zero-always (exercises exitZeroAlways flag)
+            ('cli-exit0', ['--exit-zero-always', aboutHtml]),
+            # --asciiquotes (exercises asciiQuotes flag)
+            ('cli-ascii', ['--asciiquotes', aboutHtml]),
+            # --html with XHTML file (exercises forceHTML path)
+            ('cli-html', ['--html', xhtmlFile]),
+            # --svg with SVG file (exercises forceSVG path)
+            ('cli-forcesvg', ['--svg', svgFile]),
+            # --css with CSS file (exercises forceCSS path)
+            ('cli-forcecss', ['--css', cssFile]),
+            # --Werror (exercises wError flag)
+            ('cli-werror', ['--Werror', aboutHtml]),
+            # --no-stream (exercises noStream flag)
+            ('cli-nostream', ['--no-stream', aboutHtml]),
+            # XHTML auto-detection (exercises checkHtmlFile xhtml path)
+            ('cli-xhtml', [xhtmlFile]),
+            # --filterfile (exercises filterfile loading code)
+            ('cli-filtfile', ['--filterfile', filterFile, aboutHtml]),
+            # --svg + directory (exercises forceSVG in recurseDirectory)
+            ('cli-svgdir', ['--svg', svgDir]),
+            # --skip-non-html (exercises skipNonHTML flag)
+            ('cli-skiphtml', ['--skip-non-html', htmlDir]),
+        ]
+        for name, extraArgs in cliRuns:
+            execFile = os.path.join(coverageDir, "%s.exec" % name)
+            agentArg = ("-javaagent:%s=destfile=%s,includes=nu.validator.*"
+                        % (jacocoAgentJar, execFile))
+            args = [javaCmd, agentArg, '-jar', vnuJar] + extraArgs
+            print("  %s" % shlex.join(args[-4:]))
+            # Some runs will exit non-zero (e.g. non-conforming files);
+            # that is expected, we just want the coverage data
+            print(shlex.join(args))
+            subprocess.call(args)
+
+        # Run TestRunner integration tests with JaCoCo agent
+        print("\nRunning TestRunner with coverage...")
+        trExecFile = os.path.join(coverageDir, "testrunner.exec")
+        agentArg = "-javaagent:%s=destfile=%s,includes=nu.validator.*" % (
+            jacocoAgentJar, trExecFile)
+        args = [javaCmd, agentArg]
+        if stackSize != "":
+            args.append('-Xss' + stackSize + 'k')
+        args.append('-classpath')
+        args.append(vnuJar)
+        args.append('nu.validator.client.TestRunner')
+        if verbose:
+            args.append("--verbose")
+        args.append("tests/messages.json")
+        runCmd(args)
+
+        # Run e2e tests with instrumented server (if Playwright available)
+        if isPlaywrightAvailable():
+            global stylesheet, script, icon
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            global statistics
+            statistics = 1
+            print("\nRunning e2e tests with coverage...")
+            e2eExecFile = os.path.join(coverageDir, "e2e.exec")
+            self.runE2eTests(jacocoExecFile=e2eExecFile,
+                             extraCoverageRequests=True)
+            e2eRan = True
+        else:
+            e2eRan = False
+            print("\nSkipping e2e coverage (Playwright not available).")
+
+        # Merge all .exec files
+        execFiles = globmod.glob(os.path.join(coverageDir, "*.exec"))
+        mergedExec = os.path.join(coverageDir, "merged.exec")
+        print("\nMerging %d coverage data files..." % len(execFiles))
+        mergeArgs = [javaCmd, '-jar', jacocoCliJar, 'merge']
+        mergeArgs.extend(execFiles)
+        mergeArgs.extend(['--destfile', mergedExec])
+        runCmd(mergeArgs)
+
+        # Generate CSV report for threshold checking
+        classfilesDir = os.path.join(
+            buildRoot, "build", "validator", "full", "classes")
+        srcDir = os.path.join(buildRoot, "src")
+        builtSrcDir = os.path.join(
+            buildRoot, "build", "validator", "builtSrc")
+        csvFile = os.path.join(coverageDir, "coverage.csv")
+        print("\nGenerating CSV coverage report...")
+        csvArgs = [javaCmd, '-jar', jacocoCliJar, 'report', mergedExec,
+                   '--classfiles', classfilesDir,
+                   '--sourcefiles', srcDir,
+                   '--sourcefiles', builtSrcDir,
+                   '--csv', csvFile]
+        runCmd(csvArgs)
+
+        # Parse CSV and check threshold
+        totalMissed = 0
+        totalCovered = 0
+        with open(csvFile, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                totalMissed += int(row['LINE_MISSED'])
+                totalCovered += int(row['LINE_COVERED'])
+
+        totalLines = totalMissed + totalCovered
+        if totalLines == 0:
+            print("No line coverage data found.")
+            sys.exit(1)
+
+        pct = totalCovered / totalLines * 100
+        print("\nLine coverage: %d/%d (%.1f%%)" % (
+            totalCovered, totalLines, pct))
+
+        if e2eRan:
+            if pct < coverageThreshold:
+                print("FAIL: Coverage %.1f%% is below threshold %d%%." % (
+                    pct, coverageThreshold))
+                sys.exit(1)
+            else:
+                print("PASS: Coverage %.1f%% meets threshold %d%%." % (
+                    pct, coverageThreshold))
+        else:
+            print("Skipping threshold check (e2e tests did not run).")
+
+    def makeTestMessages(self):
+        os.chdir("tests")
+        runCmdFromString(makeCmd)
 
     def buildAll(self):
-        if not os.path.exists(os.path.join(buildRoot, "dependencies")):
-            downloadDependencies()
-            downloadLocalEntities()
-        buildCssValidator()
-        buildJing()
-        buildSchemaDrivers()
-        prepareLocalEntityJar()
-        buildLangdetect()
-        buildGalimatias()
-        buildHtmlParser()
-        self.buildValidator()
+        self.createJarOrWar("jar")
 
 
 def createTarball():
@@ -1475,6 +1827,40 @@ def createDepTarball():
         os.path.join(buildRoot, "deps.tar.gz"),
     ] + dependencyJarPaths()
     runCmd(args)
+
+
+def getMavenCentralLatestVersion():
+    """Fetch and return the latest version from Maven Central."""
+    url = "https://repo1.maven.org/maven2/nu/validator/validator/maven-metadata.xml"  # nopep8
+    try:
+        with urlopen(url) as response:
+            maven_metadata = response.read()
+    except HTTPError as e:
+        print(f"HTTP Error fetching Maven metadata: {e.reason}")
+        sys.exit(1)
+    except URLError as e:
+        print(f"URL Error fetching Maven metadata: {e.reason}")
+        sys.exit(1)
+    root = ET.fromstring(maven_metadata)
+    latest = root.findtext("./versioning/latest")
+    if not latest:
+        latest = root.findtext("./versioning/release")
+    if not latest:
+        print("Could not find latest version on Maven Central")
+        sys.exit(1)
+    return latest
+
+
+def checkMavenVersionExists():
+    latest = getMavenCentralLatestVersion()
+    print(f"Latest version on Maven Central: {latest}")
+    print(f"Current version: {validatorVersion}")
+    if latest == validatorVersion:
+        print(f"Version {validatorVersion} already exists on Maven Central")
+        sys.exit(0)
+    else:
+        print(f"Version {validatorVersion} does not exist on Maven Central")
+        sys.exit(1)
 
 
 def deployOverScp():
@@ -1540,81 +1926,98 @@ def spiderApacheDirectories(baseUrl, baseDir):
         spiderApacheDirectories(directory, baseDir)
 
 
-def downloadLocalEntities():
-    removeIfDirExists(os.path.join(buildRoot, "local-entities"))
-    fileMap = {}
-    fileMap["html5spec"] = "https://html.spec.whatwg.org/"
-    ensureDirExists(filesDir)
-    for filename in fileMap:
-        fetchUrlTo(fileMap[filename], os.path.join(filesDir, filename))
-
-
 def localPathToJarCompatName(path):
     return javaSafeNamePat.sub('_', path)
 
 
-def preparePropertiesFile():
-    f = open(os.path.join(filesDir, "misc.properties"), 'w')
-    f.write("nu.validator.servlet.service-name=%s\n" % serviceName)
-    f.write("nu.validator.servlet.results-title=%s\n" % resultsTitle)
-    f.write("nu.validator.servlet.version=%s\n" % validatorVersion)
-    f.write("nu.validator.servlet.user-agent=%s\n" % userAgent)
-    f.close()
-
-
+# This function builds all the resources.
+# It requires to have built the schemas before through buildSchemaDrivers()
 def prepareLocalEntityJar():
     ensureDirExists(filesDir)
-    preparePropertiesFile()
-    shutil.copyfile(os.path.join(buildRoot, presetsFile),
-                    os.path.join(filesDir, "presets"))
-    shutil.copyfile(os.path.join(buildRoot, aboutFile),
-                    os.path.join(filesDir, "about.html"))
-    shutil.copyfile(os.path.join(buildRoot, stylesheetFile),
-                    os.path.join(filesDir, "style.css"))
-    shutil.copyfile(os.path.join(buildRoot, scriptFile),
-                    os.path.join(filesDir, "script.js"))
-    shutil.copyfile(os.path.join(buildRoot, "site", "icon.png"),
-                    os.path.join(filesDir, "icon.png"))
-    shutil.copyfile(os.path.join(buildRoot, "docs", "Microsyntax-descriptions.md"),  # nopep8
-                    os.path.join(filesDir, "syntax-descriptions"))
-    shutil.copyfile(os.path.join(buildRoot, "resources", "language-profiles-list.txt"),  # nopep8
-                    os.path.join(filesDir, "language-profiles-list.txt"))
-    shutil.copyfile(os.path.join(buildRoot, "resources", "alt_advice.html"),
-                    os.path.join(filesDir, "vnu-alt-advice"))
-    shutil.copyfile(os.path.join(buildRoot, "resources", "language-subtag-registry.txt"),  # nopep8
-                    os.path.join(filesDir, "subtag-registry"))
-    languageProfilesTargetDir = os.path.join(filesDir, "language-profiles")
-    removeIfDirExists(languageProfilesTargetDir)
-    shutil.copytree(os.path.join(buildRoot, "resources", "language-profiles"), languageProfilesTargetDir)  # nopep8
-    shutil.copyfile(os.path.join(buildRoot, "resources", "log4j.properties"),
-                    os.path.join(filesDir, "log4j.properties"))
-    shutil.copyfile(os.path.join(buildRoot, "README.md"),
-                    os.path.join(filesDir, "cli-help"))
+
+    makeUsage(validatorVersion)
+    makeCliHelp(validatorVersion)
+
+    buildSchemaDrivers()
     f = open(os.path.join(buildRoot, "resources", "entity-map.txt"))
     o = open(os.path.join(filesDir, "entitymap"), 'w')
     try:
         for line in f:
             url, path = line.strip().split("\t")
-            entPath = ""
+            entPath = []
+            index = -1
             if path.startswith("schema/html5/"):
-                entPath = os.path.join(buildRoot, "schema", "html5", path[13:])
+                entPath.append(os.path.join(buildRoot, "schema", "html5",
+                                            path[13:]))
+                entPath.append(os.path.join(buildRoot, "build", "schema",
+                                            "html5", path[13:]))
             elif path.startswith("schema/"):
-                entPath = os.path.join(buildRoot, path)
-            safeName = localPathToJarCompatName(path)
-            safePath = os.path.join(filesDir, safeName)
-            if os.path.exists(entPath):
+                entPath.append(os.path.join(buildRoot, path))
+                entPath.append(os.path.join(buildRoot, "build", path))
+            else:
+                continue
+            if os.path.exists(entPath[0]):
+                index = 0
+            elif os.path.exists(entPath[1]):
+                index = 1
+            if index >= 0:
+                safeName = localPathToJarCompatName(path)
+                safePath = os.path.join(filesDir, safeName)
                 o.write("%s\t%s\n" % (url, safeName))
-                shutil.copyfile(entPath, safePath)
+                shutil.copyfile(entPath[index], safePath)
     finally:
         f.close()
         o.close()
-    schemaDir = os.path.join(buildRoot, "schema")
-    for file in coreSchemaDriverFiles:
-        removeIfExists(os.path.join(schemaDir, file))
-    for file in htmlSchemaDriverFiles:
-        removeIfExists(os.path.join(schemaDir, "html5", file))
-    removeIfDirExists(os.path.join(schemaDir, "xhtml10"))
-    removeIfDirExists(os.path.join(schemaDir, "rdf"))
+
+
+def makeUsage(version):
+    if os.path.exists(os.path.join(filesDir, "usage")):
+        return
+    usageLines = []
+    with open(os.path.join(buildRoot, "docs", "vnu.1.md"),
+              encoding="utf-8") as f:
+        for line in f:
+            usageLines.append(stripLeadingHashes(line))
+            if line.startswith("# OPTIONS"):
+                break
+    usageLines.append("\n")
+    usageLines.append("For details on all options and usage,"
+                      + " try the \"--help\" option or see:\n")
+    usageLines.append("https://validator.github.io/validator/\n")
+    usageLines.append("\n")
+    match = re.search(r'\(([^)]*)\)[^()]*$', version)
+    if match:
+        usageLines.append(f"👉 {version} changelog: https://github.com/validator/validator/commits/{match.group(1)}")  # nopep8
+    with open(os.path.join(filesDir, "usage"), "w", encoding="utf-8") as f:
+        f.writelines(usageLines)
+
+
+def makeCliHelp(version):
+    if os.path.exists(os.path.join(filesDir, "cli-help")):
+        return
+    usageLines = []
+    with open(os.path.join(buildRoot, "docs", "vnu.1.md"),
+              encoding="utf-8") as f:
+        for line in f:
+            usageLines.append(stripLeadingHashes(line))
+    usageLines.append("\n")
+    match = re.search(r'\(([^)]*)\)[^()]*$', version)
+    if match:
+        usageLines.append(f"👉 {version} changelog: https://github.com/validator/validator/commits/{match.group(1)}")  # nopep8
+    with open(os.path.join(filesDir, "cli-help"), "w", encoding="utf-8") as f:
+        f.writelines(usageLines)
+
+
+def stripLeadingHashes(line):
+    if line.lstrip().startswith("#"):
+        i = 0
+        while i < len(line) and line[i] == "#":
+            i += 1
+        while i < len(line) and line[i] == " ":
+            i += 1
+        return line[i:]
+    else:
+        return line
 
 
 def zipExtract(zipArch, targetDir):
@@ -1631,27 +2034,140 @@ def zipExtract(zipArch, targetDir):
             o.close()
 
 
-def downloadDependency(url, md5sum):
-    ensureDirExists(dependencyDir)
-    path = os.path.join(dependencyDir, url[url.rfind("/") + 1:])
-    if not os.path.exists(path):
-        fetchUrlTo(url, path, md5sum)
-        if path.endswith(".zip"):
-            zipExtract(path, dependencyDir)
+def runGit(*args, check=True, capture_output=True, text=True):
+    """Run a git command and return stdout."""
+    return subprocess.run(
+        [gitCmd, *args], check=check, capture_output=capture_output, text=text
+    ).stdout.strip()
 
 
-def updateSubmodules():
-    runCmd([gitCmd, 'submodule', 'update', '--remote', '--merge', '--init'])
+def loadGitSubtreesFile(path: Path):
+    if not path.exists():
+        print(f"Error: {path} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    result = {}
+    current_section = None
+
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        if not line.startswith(" "):  # new top-level key
+            if not line.endswith(":"):
+                print(f"Error: malformed section header: {line}", file=sys.stderr)  # nopep8
+                sys.exit(1)
+            current_section = line.rstrip(":").strip()
+            result[current_section] = {}
+        else:
+            if current_section is None:
+                print(f"Error: key-value pair outside section: {line}", file=sys.stderr)  # nopep8
+                sys.exit(1)
+            key, _, value = line.strip().partition(":")
+            result[current_section][key.strip()] = value.strip()
+    return result
 
 
-def updateSubmodulesShallow():
-    runCmd([gitCmd, 'submodule', 'update', '--init', '--depth', '1'])
+def saveGitSubtreesFile(path: Path, data):
+    lines = []
+    for section, values in data.items():
+        lines.append(f"{section}:")
+        for key, value in values.items():
+            lines.append(f"    {key}: {value}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def getLastCommit(prefix: str):
+    """Return the last commit SHA in the subtree prefix."""
+    try:
+        return runGit("log", "-1", "--format=%H", "--", prefix)
+    except subprocess.CalledProcessError:
+        return None
+
+
+def updateSubtree(dir_name, info):
+    remote_url = info.get("remote_url")
+    remote_name = info.get("remote_name", Path(dir_name).name)
+    branch = info.get("remote_branch", "master")
+    last_local_merge = info.get("last_local_merge")
+    last_remote_commit = info.get("current_commit")
+    skip_updates = info.get("skip_updates")
+
+    if not remote_url:
+        print(f"⚠️ Skipping {dir_name}: no remote URL")
+        return False, last_local_merge, last_remote_commit
+
+    print(f"\n==> Checking {dir_name} ({branch})...")
+
+    if skip_updates and skip_updates == "true":
+        print(f"⏭️ Skipping {dir_name} because it has “skip_updates: true”")
+        return False, last_local_merge, last_remote_commit
+
+    try:
+        runGit("remote", "add", "-f", remote_name, remote_url)
+    except subprocess.CalledProcessError:
+        pass
+
+    try:
+        runGit("fetch", remote_name,
+               f"+refs/heads/*:refs/remotes/{remote_name}/*")
+    except subprocess.CalledProcessError:
+        print(f"⚠️ Failed to fetch remote {remote_name}, skipping {dir_name}")
+        return False, last_local_merge, last_remote_commit
+
+    try:
+        remote_sha = runGit("rev-parse",
+                            f"refs/remotes/{remote_name}/{branch}")
+    except subprocess.CalledProcessError:
+        available = runGit("branch", "-r")
+        print(f"⚠️ Remote branch '{branch}' not found for {dir_name}, skipping")  # nopep8
+        print(f"    Available remote branches:\n{available}")
+        return False, last_local_merge, last_remote_commit
+
+    current_last = getLastCommit(dir_name)
+
+    print(f"    Last local commit in subtree: {current_last}")
+    print(f"    Last local merge commit:      {last_local_merge}")
+    print(f"    Last pulled remote commit:    {last_remote_commit}")
+    print(f"    Remote HEAD commit:           {remote_sha}")
+
+    if current_last != last_local_merge:
+        print(f"⏭️ {dir_name} has local commits ahead of last merge; skipping update")  # nopep8
+        return False, last_local_merge, last_remote_commit
+
+    if last_remote_commit == remote_sha:
+        print(f"✅ {dir_name} is already up to date")
+        return False, last_local_merge, last_remote_commit
+
+    print(f"🔄 Updating {dir_name} from {remote_name}/{branch}")
+    runGit("subtree", "pull", "--prefix", dir_name, remote_name, branch, "--squash")  # nopep8
+
+    new_merge_commit = getLastCommit(dir_name)
+    return True, new_merge_commit, remote_sha
+
+
+def updateSubtrees():
+    data = loadGitSubtreesFile(Path(gitSubtreesFile))
+    updated_count = 0
+
+    for dir_name, info in data.items():
+        updated, new_local_merge, new_remote_commit = updateSubtree(dir_name, info)  # nopep8
+        if updated:
+            updated_count += 1
+            info["last_local_merge"] = new_local_merge
+            info["current_commit"] = new_remote_commit
+
+    if updated_count:
+        saveGitSubtreesFile(Path(gitSubtreesFile), data)
+
+    print(
+        f"\nSummary: {updated_count} subtree(s) updated, "
+        f"{len(data) - updated_count} already up to date or skipped due to local commits."  # nopep8
+    )
 
 
 def downloadExtras():
     url = "https://repo1.maven.org/maven2/log4j/apache-log4j-extras/1.2.17/apache-log4j-extras-1.2.17.jar"  # nopep8
     md5sum = "f32ed7ae770c83a4ac6fe6714f98f1bd"
-    extrasDir = os.path.join(buildRoot, "extras")
     ensureDirExists(extrasDir)
     path = os.path.join(extrasDir, url[url.rfind("/") + 1:])
     if not os.path.exists(path):
@@ -1659,10 +2175,7 @@ def downloadExtras():
 
 
 def downloadDependencies():
-    for url, md5sum in dependencyPackages:
-        downloadDependency(url, md5sum)
-    for url, md5sum in moduleDependencyPackages:
-        downloadDependency(url, md5sum)
+    runAnt([], "dl-all")
     downloadExtras()
 
 
@@ -1671,102 +2184,375 @@ def splitHostSpec(spec):
     return (spec[0:index], spec[index:])
 
 
-def printHelp():
-    print("Usage: python %s [options] [tasks]" % sys.argv[0])
-    print("")
-    print("Options:")
-    print("  --about=https://about.validator.nu/")
-    print("                                Sets URL for the about page")
-    print("  --control-port=-1")
-    print("                                Sets server control port number")
-    print("                                (necessary for daemonizing)")
-    print("  --filter-file=resources/message-filters.text")
-    print("                                Sets path to the filter file")
-    print("  --git=/usr/bin/git         -- Sets path to the git binary")
-    print("  --heap=512                 -- Sets Java heap size in MB")
-    print("  --html5link=https://html.spec.whatwg.org/")
-    print("                                Sets link URL of the HTML5 spec")
-    print("  --html5load=https://html.spec.whatwg.org/")
-    print("                                Sets load URL of the HTML5 spec")
-    print("  --jar=/usr/bin/jar         -- Sets path to the jar binary")
-    print("  --java=/usr/bin/java       -- Sets path to the java binary")
-    print("  --javac=/usr/bin/javac     -- Sets path to the javac binary")
-    print("  --javadoc=/usr/bin/javadoc -- Sets path to the javadoc binary")
-    print("  --javaversion=N.N          -- Sets Java VM version to build for")
-    print("  --jdk-bin=/j2se/bin        -- Sets paths for all JDK tools")
-    print("  --log4j=log4j.properties   -- Sets path to log4 configuration")
-    print("  --messages-limit=1000")
-    print("                                Sets limit on the maximum number")
-    print("                                of errors+warnings to report")
-    print("                                for any document before stopping")
-    print("  --name=Validator.nu        -- Sets service name")
-    print("  --bind-address=0.0.0.0     -- Sets server bind address")
-    print("  --port=8888                -- Sets server port number")
-    print("  --allowed-address-type=<value>")
-    print("                                Sets which URLs the checker allows.")
-    print("                                Possible values:")
-    print("                                - 'all': Allow all URLs (default)")
-    print("                                - 'same-origin': Allow only")
-    print("                                  same-origin URLs")
-    print("                                - 'none': Disallow all URLs")
-    print("  --promiscuous-ssl=on       -- Don't check SSL/TLS trust chain")
-    print("  --results-title=Validation results")
-    print("                                Sets title to show on results page")
-    print("  --script=script.js")
-    print("                                Sets the URL for the script")
-    print("                                Defaults to \"script.js\" relative")
-    print("                                to the validator URL")
-    print("  --script-additional=<URL>")
-    print("                                Sets the URL for a script file to")
-    print("                                include in addition to the file")
-    print("                                specified by the --script option.")
-    print("  --stacksize=NN             -- Sets Java thread stack size in KB")
-    print("  --stylesheet=style.css")
-    print("                                Sets URL for the style sheet")
-    print("                                Defaults to \"style.css\" relative")
-    print("                                to the validator URL")
-    print("  --user-agent                  Sets User-Agent string for checker")
-    print("")
-    print("Tasks:")
-    print("  update   -- Update git submodules")
-    print("  dldeps   -- Download missing dependency libraries and entities")
-    print("  build    -- Build the source")
-    print("  test     -- Run regression tests")
-    print("  check    -- Perform self-test of the system")
-    print("  run      -- Run the system")
-    print("  all      -- update dldeps build test run")
-    print("  bundle   -- Create a Maven release bundle")
-    print("  image    -- Create a binary runtime image of the checker")
-    print("  jar      -- Create a JAR package of the checker")
-    print("  war      -- Create a WAR package of the checker")
-    print("  script   -- Make run-validator.sh script for running the system")
+def waitUntilServiceIsReady():
+    if shutil.which("nc"):
+        isReady = False
+        while (isReady is False):
+            isReady = True
+            try:
+                subprocess.run(["nc", "-z", bindAddress, portNumber],
+                               check=True)
+            except Exception:
+                isReady = False
+                time.sleep(1)
+    else:
+        # TODO: Support an equivalent command on Windows
+        time.sleep(15)
 
 
-def main(argv):
+def isPlaywrightAvailable():
+    """Check if Playwright e2e tests can be run in this environment."""
+    if not shutil.which("pnpm"):
+        return False
+    playwrightDir = os.path.join(buildRoot, "node_modules", "@playwright", "test")
+    return os.path.exists(playwrightDir)
+
+
+def waitUntilServiceIsDown():
+    if shutil.which("nc"):
+        isReady = True
+        while (isReady is True):
+            isReady = True
+            try:
+                subprocess.run(["nc", "-z", bindAddress, portNumber],
+                               check=True, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.STDOUT)
+            except Exception:
+                isReady = False
+            time.sleep(1)
+    else:
+        # TODO: Support an equivalent command on Windows
+        time.sleep(5)
+
+
+def isServiceUp(defaultReply):
+    if shutil.which("nc"):
+        try:
+            subprocess.run(["nc", "-z", bindAddress, portNumber],
+                           check=True, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.STDOUT)
+        except Exception:
+            return False
+        return True
+    # TODO: Support an equivalent command on Windows
+    return defaultReply
+
+
+def getTaskChoices():
+    return [
+        'update-subtrees', 'dldeps', 'checkout', 'build', 'docker-build',
+        'docker-run', 'docker-push', 'bundle', 'npm-install',
+        'npm-release', 'maven-artifacts', 'maven-sign', 'maven-test',
+        'maven-bundle', 'maven-release', 'maven-version-exists', 'image',
+        'jar', 'war', 'sign', 'localent', 'deploy', 'tar', 'script',
+        'test', 'test-specs', 'unit-tests', 'e2e-tests', 'make-messages', 'coverage', 'check',
+        'self-test', 'clean', 'realclean', 'run', 'all', 'completion',
+    ]
+
+
+def getAntTargets():
+    antTargetsFile = os.path.join(buildRoot, 'build', '.ant-targets-build.xml')
+    if not os.path.exists(antTargetsFile):
+        return []
+    try:
+        with open(antTargetsFile, 'r') as f:
+            # Each line contains a target name
+            targets = [line.strip() for line in f if line.strip()]
+        return targets
+    except (IOError, OSError):
+        return []
+
+
+def taskCompleter(prefix, parsed_args, **kwargs):
+    if not ARGCOMPLETE_AVAILABLE:
+        return []
+    from argcomplete.completers import FilesCompleter
+    comp_line = os.environ.get('COMP_LINE', '')
+    # Only use FilesCompleter if "check" is explicitly typed as a task
+    # Look for "check" as a complete word at the end or followed by space
+    if comp_line.rstrip().endswith(' check') or ' check ' in comp_line:
+        # Make sure "check" is not part of an option value, by checking context
+        parts = comp_line.split()
+        if 'check' in parts:
+            # If "check" is in the parts and at least one item after script,
+            # and it looks like it's not in an option value (no "=" sign in
+            # the same part), then use FilesCompleter
+            for part in parts:
+                if part == 'check':
+                    return FilesCompleter()(prefix, **kwargs)
+
+    task_choices = getTaskChoices()
+    completions = [t for t in task_choices if t.startswith(prefix)]
+    if 'ant:'.startswith(prefix):
+        completions.append('ant:')
+    if prefix.startswith('ant:'):
+        antPrefix = prefix[4:]  # Remove 'ant:' prefix
+        antTargets = getAntTargets()
+        antCompletions = ['ant:' + t for t in antTargets if
+                          t.startswith(antPrefix)]
+        completions.extend(antCompletions)
+    return completions
+
+
+def detectShell():
+    shell_path = os.environ.get('SHELL', '/bin/bash')
+    shell_name = os.path.basename(shell_path)
+    shell_map = {
+        'bash': 'bash',
+        'zsh': 'zsh',
+        'tcsh': 'tcsh',
+        'fish': 'fish',
+        'pwsh': 'powershell',
+        'powershell': 'powershell',
+    }
+    return shell_map.get(shell_name, 'bash')
+
+
+def generateCompletion(script_name):
+    if not ARGCOMPLETE_AVAILABLE:
+        return 'To enable shell tab completion for this script’s options, do this:\n    pip install argcomplete'  # nopep8
+    shell = detectShell()
+    if (shell in ["bash", "zsh", "tcsh"]):
+        return f'eval "`register-python-argcomplete -s {shell} {script_name}`"'
+    else:
+        return 'https://github.com/kislyuk/argcomplete/blob/main/contrib/README.rst'  # nopep8
+
+
+def printCompletionInstructions(script_name):
+    if not ARGCOMPLETE_AVAILABLE:
+        print('\nTo enable shell tab completion for this script’s options, do this:')  # nopep8
+        print('\n    pip install argcomplete')
+        return
+    print("\nTo enable shell tab completion for this script's options,", end="")  # nopep8
+    if (detectShell() in ["bash", "zsh", "tcsh"]):
+        print(' run this:')
+    else:
+        print(' see the following:')  # nopep8
+    print(f'\n    {generateCompletion(script_name)}')
+
+
+def applyArgsToGlobals(args):
+    global gitCmd, javaCmd, jarCmd, javacCmd, javadocCmd, antCmd, \
+        bindAddress, portNumber, controlPort, log4jProps, heapSize, \
+        stackSize, javaTargetVersion, html5specLink, aboutPage, \
+        denyList, userAgent, deploymentTarget, script, scriptAdditional, \
+        serviceName, resultsTitle, messagesLimit, pageTemplate, \
+        formTemplate, presetsFile, aboutFile, stylesheetFile, scriptFile, \
+        filterFile, allowedAddressType, allowForbiddenHosts, \
+        disablePromiscuousSsl, connectionTimeoutSeconds, \
+        socketTimeoutSeconds, maxConnPerRoute, maxTotalConnections, \
+        statistics, stylesheet, icon, additionalJavaSystemProperties, \
+        offline, verbose, antCommonArgs, validatorVersion, genericHost, \
+        genericPath, html5Host, html5Path, parsetreeHost, parsetreePath
+
+    simpleMapping = {
+        'git': 'gitCmd',
+        'ant': 'antCmd',
+        'bind_address': 'bindAddress',
+        'port': 'portNumber',
+        'log4j': 'log4jProps',
+        'heap': 'heapSize',
+        'html5link': 'html5specLink',
+        'about': 'aboutPage',
+        'denylist': 'denyList',
+        'stylesheet': 'stylesheet',
+        'user_agent': 'userAgent',
+        'script': 'script',
+        'name': 'serviceName',
+        'results_title': 'resultsTitle',
+        'messages_limit': 'messagesLimit',
+        'page_template': 'pageTemplate',
+        'form_template': 'formTemplate',
+        'presets_file': 'presetsFile',
+        'about_file': 'aboutFile',
+        'stylesheet_file': 'stylesheetFile',
+        'script_file': 'scriptFile',
+        'filter_file': 'filterFile',
+        'allowed_address_type': 'allowedAddressType',
+        'allow_forbidden_hosts': 'allowForbiddenHosts',
+        'connection_timeout': 'connectionTimeoutSeconds',
+        'socket_timeout': 'socketTimeoutSeconds',
+        'max_requests': 'maxConnPerRoute',
+        'max_total_connections': 'maxTotalConnections',
+        'additional_java_system_properties': 'additionalJavaSystemProperties',
+    }
+
+    for argName, globalName in simpleMapping.items():
+        if hasattr(args, argName):
+            globals()[globalName] = getattr(args, argName)
+
+    # Handle conditional/special mappings
+    antCommonArgs.extend(args.ant_extra_arg)
+    if args.offline:
+        antCommonArgs.append('-Doffline=true')
+        offline = True
+    if args.control_port:
+        controlPort = args.control_port
+    if args.stacksize is not None:
+        stackSize = args.stacksize
+    if args.javaversion:
+        javaTargetVersion = args.javaversion
+    if args.icon:
+        icon = args.icon
+    if args.scp_target:
+        deploymentTarget = args.scp_target
+    if args.script_additional is not None:
+        scriptAdditional = args.script_additional
+    if args.genericpath:
+        (genericHost, genericPath) = splitHostSpec(args.genericpath)
+    if args.html5path:
+        (html5Host, html5Path) = splitHostSpec(args.html5path)
+    if args.parsetreepath:
+        (parsetreeHost, parsetreePath) = splitHostSpec(args.parsetreepath)
+    if args.promiscuous_ssl == 'off':
+        disablePromiscuousSsl = 1
+    else:
+        disablePromiscuousSsl = 0
+    if args.statistics:
+        statistics = 1
+    if args.version:
+        validatorVersion = args.version
+        ensureDirExists(filesDir)
+        makeUsage(validatorVersion)
+        makeCliHelp(validatorVersion)
+    if args.verbose:
+        antCommonArgs.append('-verbose')
+        verbose = True
+
+    if args.jdk_bin:
+        jdkBinDir = args.jdk_bin
+        javaExecutable = 'java.exe' if sys.platform == 'win32' else 'java'
+        jarExecutable = 'jar.exe' if sys.platform == 'win32' else 'jar'
+        javacExecutable = 'javac.exe' if sys.platform == 'win32' else 'javac'
+        javadocExecutable = 'javadoc.exe' if sys.platform == 'win32' else 'javadoc'  # nopep8
+        javaCmd = os.path.join(jdkBinDir, javaExecutable)
+        jarCmd = os.path.join(jdkBinDir, jarExecutable)
+        javacCmd = os.path.join(jdkBinDir, javacExecutable)
+        javadocCmd = os.path.join(jdkBinDir, javadocExecutable)
+
+
+def main(argv, script_name=None):
     global gitCmd, javaCmd, jarCmd, javacCmd, javadocCmd, portNumber, \
         controlPort, log4jProps, heapSize, stackSize, javaTargetVersion, \
         html5specLink, aboutPage, denyList, userAgent, deploymentTarget, \
         scriptAdditional, serviceName, resultsTitle, messagesLimit, \
         pageTemplate, formTemplate, presetsFile, aboutFile, stylesheetFile, \
-        scriptFile, filterFile, allowedAddressType, disablePromiscuousSsl, extrasDir, \
+        scriptFile, filterFile, allowedAddressType, disablePromiscuousSsl, \
         connectionTimeoutSeconds, socketTimeoutSeconds, maxTotalConnections, \
         maxConnPerRoute, statistics, stylesheet, script, icon, bindAddress, \
-        jdepsCmd, jlinkCmd, javaEnvVersion, additionalJavaSystemProperties
-    if len(argv) == 0:
-        printHelp()
+        jdepsCmd, jlinkCmd, javaEnvVersion, additionalJavaSystemProperties, \
+        offline, antCmd, validatorVersion, verbose, extrasDir
+
+    if script_name is None:
+        script_name = "build/build.py"
+
+    parser = argparse.ArgumentParser(add_help=False, formatter_class=TasksFormatter)  # nopep8
+    parser.add_argument("-h", "--help", action=CustomHelpAction, script_name=script_name, help="show this help message and exit")  # nopep8
+    parser.add_argument("--about", default="https://about.validator.nu/", help="Sets URL for the about page")  # nopep8
+    parser.add_argument("--control-port", help="Sets server control port number (necessary for daemonizing)")  # nopep8
+    parser.add_argument("--filter-file", default="resources/message-filters.txt", help="Sets path to the filter file")  # nopep8
+    parser.add_argument("--git", default="/usr/bin/git", help="Sets path to the git binary")  # nopep8
+    parser.add_argument("--heap", default="512", help="Sets Java heap size in MB")  # nopep8
+    parser.add_argument("--html5link", default="https://html.spec.whatwg.org/", help="Sets link URL of the HTML5 spec")  # nopep8
+    parser.add_argument("--html5load", default="https://html.spec.whatwg.org/", help="Sets load URL of the HTML5 spec")  # nopep8
+    parser.add_argument("--jar", default="/usr/bin/jar", help="Sets path to the jar binary")  # nopep8
+    parser.add_argument("--java", default="/usr/bin/java", help="Sets path to the java binary")  # nopep8
+    parser.add_argument("--javac", default="/usr/bin/javac", help="Sets path to the javac binary")  # nopep8
+    parser.add_argument("--javadoc", default="/usr/bin/javadoc", help="Sets path to the javadoc binary")  # nopep8
+    parser.add_argument("--ant", default="ant", help="Sets path to the ant binary")  # nopep8
+    parser.add_argument("--javaversion", help="Sets Java VM version to build for")  # nopep8
+    parser.add_argument("--jdk-bin", help="Sets paths for all JDK tools")  # nopep8
+    parser.add_argument("--log4j", default="resources/log4j.properties", help="Sets path to log4 configuration")  # nopep8
+    parser.add_argument("--messages-limit", type=int, default=1000, help="Sets limit on the maximum number of errors+warnings to report for any document before stopping")  # nopep8
+    parser.add_argument("--name", default="Validator.nu", help="Sets service name")  # nopep8
+    parser.add_argument("--bind-address", default="0.0.0.0", help="Sets server bind address")  # nopep8
+    parser.add_argument("--port", default="8888", help="Sets server port number")  # nopep8
+    parser.add_argument("--allowed-address-type", choices=['all', 'same-origin', 'none'], default='all', help="Sets which URLs the checker allows.")  # nopep8
+    parser.add_argument("--allow-forbidden-hosts", action="store_true", help="Allow requests to \"forbidden\" hosts (localhost, 127.0.0.1, etc.)")  # nopep8
+    parser.add_argument("--promiscuous-ssl", choices=['on', 'off'], default='on', help="Don't check SSL/TLS trust chain")  # nopep8
+    parser.add_argument("--results-title", default="Validation results", help="Sets title to show on results page")  # nopep8
+    parser.add_argument("--script", default="script.js", help="Sets the URL for the script")  # nopep8
+    parser.add_argument("--script-additional", help="Sets the URL for a script file to include in addition to the file specified by the --script option.")  # nopep8
+    parser.add_argument("--stacksize", help="Sets Java thread stack size in KB")  # nopep8
+    parser.add_argument("--stylesheet", default="style.css", help="Sets URL for the style sheet")  # nopep8
+    parser.add_argument("--user-agent", default='Validator.nu/LV', help="Sets User-Agent string for checker")  # nopep8
+    parser.add_argument("--offline", action="store_true", help="Build offline. Needs prior download of the dependencies with 'dldeps'.")  # nopep8
+    parser.add_argument("--version", help="Sets the version of vnu to VERSION")  # nopep8
+    parser.add_argument("--verbose", action="store_true", help="Run build & tests verbosely")  # nopep8
+    parser.add_argument("--additional-java-system-properties", default="", help="Additional Java system properties")  # nopep8
+    parser.add_argument("--ant-extra-arg", action="append", default=[], help="Additional arguments for ant")  # nopep8
+    parser.add_argument("--denylist", default="", help="Deny list")  # nopep8
+    parser.add_argument("--icon", help="Icon")  # nopep8
+    parser.add_argument("--scp-target", help="SCP target")  # nopep8
+    parser.add_argument("--genericpath", help="Generic path")  # nopep8
+    parser.add_argument("--html5path", help="HTML5 path")  # nopep8
+    parser.add_argument("--parsetreepath", help="Parsetree path")  # nopep8
+    parser.add_argument("--page-template", default="site/PageEmitter.xml", help="Page template")  # nopep8
+    parser.add_argument("--form-template", default="site/FormEmitter.xml", help="Form template")  # nopep8
+    parser.add_argument("--presets-file", default="resources/presets.txt", help="Presets file")  # nopep8
+    parser.add_argument("--about-file", default="site/about.html", help="About file")  # nopep8
+    parser.add_argument("--stylesheet-file", default="site/style.css", help="Stylesheet file")  # nopep8
+    parser.add_argument("--script-file", default="site/script.js", help="Script file")  # nopep8
+    parser.add_argument("--connection-timeout", type=int, default=120, help="Connection timeout in seconds")  # nopep8
+    parser.add_argument("--socket-timeout", type=int, default=5, help="Socket timeout in seconds")  # nopep8
+    parser.add_argument("--max-requests", type=int, default=100, help="Max requests per route")  # nopep8
+    parser.add_argument("--max-total-connections", type=int, default=200, help="Max total connections")  # nopep8
+    parser.add_argument("--max-redirects", type=int, default=20, help="Max redirects")  # nopep8
+    parser.add_argument("--statistics", action="store_true", help="Enable statistics")  # nopep8
+    if ARGCOMPLETE_AVAILABLE:
+        parser.add_argument('tasks', nargs='*', help='Tasks to run').completer = taskCompleter  # nopep8
     else:
-        if 'JAVA_HOME' not in os.environ:
-            print("Error: The JAVA_HOME environment variable is not set.")
-            print("Set the JAVA_HOME environment variable to the pathname" +
-                  " of the directory where your JDK is installed.")
-            sys.exit(1)
+        parser.add_argument('tasks', nargs='*', help='Tasks to run')  # nopep8
+
+    # Preprocess argv to handle special cases where arguments after “check”
+    # should be passed through to vnu command (not parsed by argparse)
+    checkInArgv = False
+    checkIndex = -1
+    processedArgv = []
+    passthroughArgs = []
+    for i, arg in enumerate(argv):
+        if arg == 'check':
+            checkInArgv = True
+            checkIndex = i
+            processedArgv.append(arg)
+        elif checkInArgv and checkIndex >= 0 and i > checkIndex:
+            # Everything after “check” should be passed through
+            passthroughArgs.append(arg)
+        else:
+            processedArgv.append(arg)
+    if ARGCOMPLETE_AVAILABLE:
+        argcomplete.autocomplete(parser)
+    # Parse only the processed args (without “pass through” args)
+    if checkInArgv:
+        args, unknown = parser.parse_known_args(processedArgv)
+        # Add “pass through” args to tasks
+        checkTaskIndex = args.tasks.index('check')
+        args.tasks = args.tasks[:checkTaskIndex + 1] + passthroughArgs
+    else:
+        args = parser.parse_args(argv)
+
+    # Only check JAVA_HOME if we're not just doing completion
+    if '_ARGCOMPLETE' not in os.environ and 'JAVA_HOME' not in os.environ:
+        print("Error: The JAVA_HOME environment variable is not set.")
+        print("Set the JAVA_HOME environment variable to the pathname" +
+              " of the directory where your JDK is installed.")
+        sys.exit(1)
+
+    # Only initialize Java-related variables if not in completion mode
+    if '_ARGCOMPLETE' not in os.environ:
         JAVA_HOME = os.getenv('JAVA_HOME')
-        javacCmd = os.path.join(JAVA_HOME, 'bin', 'javac')
-        jarCmd = os.path.join(JAVA_HOME, 'bin', 'jar')
-        javaCmd = os.path.join(JAVA_HOME, 'bin', 'java')
-        jdepsCmd = os.path.join(JAVA_HOME, 'bin', 'jdeps')
-        jlinkCmd = os.path.join(JAVA_HOME, 'bin', 'jlink')
-        javadocCmd = os.path.join(JAVA_HOME, 'bin', 'javadoc')
+        javaExecutable = 'java.exe' if sys.platform == 'win32' else 'java'
+        javacExecutable = 'javac.exe' if sys.platform == 'win32' else 'javac'
+        jarExecutable = 'jar.exe' if sys.platform == 'win32' else 'jar'
+        jdepsExecutable = 'jdeps.exe' if sys.platform == 'win32' else 'jdeps'
+        jlinkExecutable = 'jlink.exe' if sys.platform == 'win32' else 'jlink'
+        javadocExecutable = 'javadoc.exe' if sys.platform == 'win32' else 'javadoc'  # nopep8
+        javacCmd = os.path.join(JAVA_HOME, 'bin', javacExecutable)
+        jarCmd = os.path.join(JAVA_HOME, 'bin', jarExecutable)
+        javaCmd = os.path.join(JAVA_HOME, 'bin', javaExecutable)
+        jdepsCmd = os.path.join(JAVA_HOME, 'bin', jdepsExecutable)
+        jlinkCmd = os.path.join(JAVA_HOME, 'bin', jlinkExecutable)
+        javadocCmd = os.path.join(JAVA_HOME, 'bin', javadocExecutable)
         try:
             javaRawVersion = subprocess.check_output([javaCmd, '-version'],
                                                      universal_newlines=True,
@@ -1774,290 +2560,149 @@ def main(argv):
         except TypeError:
             javaRawVersion = subprocess.check_output([javaCmd, '-version'],
                                                      stderr=subprocess.STDOUT)
+        javaRawVersion = list(filter(lambda x: 'version' in x,
+                                     javaRawVersion.splitlines()))
         javaEnvVersion = \
-            int(javaRawVersion
-                .splitlines()[0].split()[2].strip('"').split('.')[0]
+            int(javaRawVersion[0].split()[2].strip('"').split('.')[0]
                 .replace('-ea', ''))
         if javaEnvVersion < 9:
             javaTargetVersion = ''
         release = Release()
         release.runtimeDistroBasename = getRuntimeDistroBasename()
         release.runtimeDistroFile = release.runtimeDistroBasename + ".zip"
-        for arg in argv:
-            if arg.startswith("--git="):
-                gitCmd = arg[6:]
-            elif arg.startswith("--java="):
-                javaCmd = arg[7:]
-            elif arg.startswith("--additional-java-system-properties="):
-                additionalJavaSystemProperties = arg[36:]
-            elif arg.startswith("--jar="):
-                jarCmd = arg[6:]
-            elif arg.startswith("--javac="):
-                javacCmd = arg[8:]
-            elif arg.startswith("--javadoc="):
-                javadocCmd = arg[10:]
-            elif arg.startswith("--jdk-bin="):
-                jdkBinDir = arg[10:]
-                javaCmd = os.path.join(jdkBinDir, "java")
-                jarCmd = os.path.join(jdkBinDir, "jar")
-                javacCmd = os.path.join(jdkBinDir, "javac")
-                javadocCmd = os.path.join(jdkBinDir, "javadoc")
-            elif arg.startswith("--bind-address="):
-                bindAddress = arg[15:]
-            elif arg.startswith("--port="):
-                portNumber = arg[7:]
-            elif arg.startswith("--control-port="):
-                controlPort = arg[15:]
-            elif arg.startswith("--log4j="):
-                log4jProps = arg[8:]
-            elif arg.startswith("--heap="):
-                heapSize = arg[7:]
-            elif arg.startswith("--stacksize="):
-                stackSize = arg[12:]
-            elif arg.startswith("--javaversion="):
-                javaTargetVersion = arg[14:]
-            elif arg.startswith("--html5link="):
-                html5specLink = arg[12:]
-            elif arg.startswith("--about="):
-                aboutPage = arg[8:]
-            elif arg.startswith("--denylist="):
-                denyList = arg[11:]
-            elif arg.startswith("--stylesheet="):
-                stylesheet = arg[13:]
-            elif arg.startswith("--icon="):
-                icon = arg[7:]
-            elif arg.startswith("--user-agent="):
-                userAgent = arg[13:]
-            elif arg.startswith("--scp-target="):
-                deploymentTarget = arg[13:]
-            elif arg.startswith("--script="):
-                script = arg[9:]
-            elif arg.startswith("--script-additional="):
-                scriptAdditional = arg[20:]
-            elif arg.startswith("--name="):
-                serviceName = arg[7:]
-            elif arg.startswith("--results-title="):
-                resultsTitle = arg[16:]
-            elif arg.startswith("--messages-limit="):
-                messagesLimit = int(arg[17:])
-            elif arg.startswith("--genericpath="):
-                (genericHost, genericPath) = splitHostSpec(arg[14:])
-            elif arg.startswith("--html5path="):
-                (html5Host, html5Path) = splitHostSpec(arg[12:])
-            elif arg.startswith("--parsetreepath="):
-                (parsetreeHost, parsetreePath) = splitHostSpec(arg[16:])
-            elif arg.startswith("--page-template="):
-                pageTemplate = arg[16:]
-            elif arg.startswith("--form-template="):
-                formTemplate = arg[16:]
-            elif arg.startswith("--presets-file="):
-                presetsFile = arg[15:]
-            elif arg.startswith("--about-file="):
-                aboutFile = arg[13:]
-            elif arg.startswith("--stylesheet-file="):
-                stylesheetFile = arg[18:]
-            elif arg.startswith("--script-file="):
-                scriptFile = arg[14:]
-            elif arg.startswith("--filter-file="):
-                filterFile = arg[14:]
-            elif arg.startswith("--allowed-address-type="):
-                allowedAddressType = arg[23:]
-            elif arg == '--promiscuous-ssl=on':
-                disablePromiscuousSsl = 0
-            elif arg == '--promiscuous-ssl=off':
-                disablePromiscuousSsl = 1
-            elif arg == '--no-self-update':
-                pass
-            elif arg == '--local':
-                pass
-            elif arg.startswith("--connection-timeout="):
-                connectionTimeoutSeconds = int(arg[21:])
-            elif arg.startswith("--socket-timeout="):
-                socketTimeoutSeconds = int(arg[17:])
-            elif arg.startswith("--max-requests="):
-                maxConnPerRoute = int(arg[15:])
-            elif arg.startswith("--max-total-connections="):
-                maxTotalConnections = int(arg[24:])
-            elif arg.startswith("--max-redirects="):
-                maxConnPerRoute = int(arg[16:])
-            elif arg == '--statistics':
-                statistics = 1
-            elif arg == '--help':
-                printHelp()
-            elif arg == 'update':
-                updateSubmodules()
-            elif arg == 'update-shallow':
-                updateSubmodulesShallow()
-            elif arg == 'dldeps':
-                downloadDependencies()
-                downloadLocalEntities()
-            elif arg == 'checkout':
-                pass
-            elif arg == 'build':
-                release.buildAll()
-            elif arg == 'docker-build':
-                dockerBuild()
-            elif arg == 'docker-run':
-                dockerRun()
-            elif arg == 'docker-push':
-                dockerPush()
-            elif arg == 'bundle':
-                release.createBundle()
-            elif arg == 'snapshot':
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'release':
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-                release.createDistribution("jar")
-                release.createDistribution("war")
-                release.createOrUpdateGithubData()
-                release.uploadToGithub("jar")
-                release.uploadToGithub("war")
-                release.uploadNpm()
-            elif arg == 'npm-snapshot':
-                release.createJarOrWar("jar")
-                release.uploadNpm("next")
-            elif arg == 'npm-release':
-                release.createJarOrWar("jar")
-                release.uploadNpm()
-            elif arg == 'github-release':
-                release.createDistribution("jar")
-                release.createDistribution("war")
-                release.createOrUpdateGithubData()
-                release.uploadToGithub("jar")
-                release.uploadToGithub("war")
-            elif arg == 'nightly':
-                isNightly = True
-                release.createDistribution("war", isNightly)
-                release.uploadToReleasesHost("war", isNightly)
-                release.createDistribution("jar", isNightly)
-                release.uploadToReleasesHost("jar", isNightly)
-                release.uploadNpm("next")
-            elif arg == 'heroku':
-                release.uploadToHeroku()
-            elif arg == 'maven-bundle':
-                release.createBundle()
-            elif arg == 'maven-snapshot':
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'maven-release':
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'galimatias-bundle':
-                release = Release("galimatias")
-                release.createBundle()
-            elif arg == 'galimatias-snapshot':
-                release = Release("galimatias")
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'galimatias-release':
-                release = Release("galimatias")
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'langdetect-bundle':
-                release = Release("langdetect")
-                release.createBundle()
-            elif arg == 'langdetect-snapshot':
-                release = Release("langdetect")
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'langdetect-release':
-                release = Release("langdetect")
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'htmlparser-bundle':
-                release = Release("htmlparser")
-                release.createBundle()
-            elif arg == 'htmlparser-snapshot':
-                release = Release("htmlparser")
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'htmlparser-release':
-                release = Release("htmlparser")
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'cssvalidator-bundle':
-                release = Release("cssvalidator")
-                release.createBundle()
-            elif arg == 'cssvalidator-snapshot':
-                release = Release("cssvalidator")
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'cssvalidator-release':
-                release = Release("cssvalidator")
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'jing-bundle':
-                release = Release("jing")
-                release.createBundle()
-            elif arg == 'jing-snapshot':
-                release = Release("jing")
-                release.uploadToCentral(snapshotsRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'jing-release':
-                release = Release("jing")
-                release.uploadToCentral(stagingRepoUrl)
-                release.uploadMavenToGitHub()
-            elif arg == 'image':
+    else:
+        return
+
+    applyArgsToGlobals(args)
+
+    tasks = args.tasks
+    if not tasks:
+        parser.print_help()
+        printCompletionInstructions(script_name)
+        sys.exit(0)
+
+    for taskIndex, task in enumerate(tasks):
+        if task == 'update-subtrees':
+            updateSubtrees()
+        elif task == 'dldeps':
+            downloadDependencies()
+        elif task == 'checkout':
+            pass
+        elif task == 'build':
+            release.buildAll()
+        elif task == 'docker-build':
+            dockerBuild()
+        elif task == 'docker-run':
+            dockerRun()
+        elif task == 'docker-push':
+            dockerPush()
+        elif task == 'bundle':
+            release.createMavenBundle()
+        elif task == 'npm-install':
+            release.installNpm()
+        elif task == 'npm-release':
+            release.uploadNpm()
+        elif task == 'maven-artifacts':
+            release.createMavenArtifacts()
+        elif task == 'maven-sign':
+            release.signMavenArtifacts()
+        elif task == 'maven-test':
+            release.testMavenArtifact()
+        elif task == 'maven-bundle':
+            release.createMavenBundle()
+        elif task == 'maven-release':
+            release.uploadToMavenCentral()
+        elif task == 'maven-version-exists':
+            checkMavenVersionExists()
+        elif task == 'image':
+            release.createRuntimeImage()
+        elif task == 'jar':
+            release.createJarOrWar("jar")
+        elif task == 'war':
+            release.createJarOrWar("war")
+        elif task == 'sign':
+            release.sign(distDir)
+            release.sign(distWarDir)
+        elif task == 'localent':
+            prepareLocalEntityJar()
+        elif task == 'deploy':
+            deployOverScp()
+        elif task == 'tar':
+            createTarball()
+            createDepTarball()
+        elif task == 'script':
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            generateRunScript()
+        elif task == 'test':
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            release.runTests()
+        elif task == 'test-specs':
+            release.runSpecTests()
+        elif task == 'unit-tests':
+            release.runUnitTests()
+        elif task == 'e2e-tests':
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            release.runE2eTests()
+        elif task == 'make-messages':
+            release.makeTestMessages()
+        elif task == 'coverage':
+            release.runCoverageTests()
+        elif task == 'check':
+            if not os.path.exists(vnuCmd):
                 release.createRuntimeImage()
-            elif arg == 'jar':
-                release.createJarOrWar("jar")
-            elif arg == 'war':
-                release.createJarOrWar("war")
-            elif arg == 'localent':
-                prepareLocalEntityJar()
-            elif arg == 'deploy':
-                deployOverScp()
-            elif arg == 'tar':
-                createTarball()
-                createDepTarball()
-            elif arg == 'script':
-                if not stylesheet:
-                    stylesheet = 'style.css'
-                if not script:
-                    script = 'script.js'
-                if not icon:
-                    icon = 'icon.png'
-                generateRunScript()
-            elif arg == 'test':
-                release.runTests()
-            elif arg == 'check':
-                if not stylesheet:
-                    stylesheet = 'style.css'
-                if not script:
-                    script = 'script.js'
-                if not icon:
-                    icon = 'icon.png'
-                release.checkService()
-            elif arg == 'clean':
-                clean()
-            elif arg == 'realclean':
-                realclean()
-            elif arg == 'run':
-                if not stylesheet:
-                    stylesheet = 'style.css'
-                if not script:
-                    script = 'script.js'
-                if not icon:
-                    icon = 'icon.png'
-                release.runValidator()
-            elif arg == 'all':
-                updateSubmodules()
-                downloadDependencies()
-                downloadLocalEntities()
-                prepareLocalEntityJar()
-                release.buildAll()
-                release.runTests()
-                if not stylesheet:
-                    stylesheet = 'style.css'
-                if not script:
-                    script = 'script.js'
-                if not icon:
-                    icon = 'icon.png'
-                release.runValidator()
-            else:
-                print("Unknown option %s." % arg)
+            execCmd(vnuCmd, tasks[taskIndex + 1:], True)
+            break
+        elif task == 'self-test':
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            release.checkService()
+        elif task == 'clean':
+            clean()
+        elif task == 'realclean':
+            realclean()
+        elif task == 'run':
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            release.runValidator()
+        elif task == 'all':
+            release.buildAll()
+            release.runTests()
+            if not stylesheet:
+                stylesheet = 'style.css'
+            if not script:
+                script = 'script.js'
+            if not icon:
+                icon = 'icon.png'
+            release.runValidator()
+        elif task.startswith("ant:"):
+            runAnt([], task[4:])
+        elif task == "completion":
+            printCompletionInstructions(script_name)
+        else:
+            parser.error("unrecognized arguments: %s" % task)
 
 
 if __name__ == '__main__':
